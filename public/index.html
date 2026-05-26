@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCollect 小红书 PoC</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header" aria-label="顶部导航">
+      <div class="brand">
+        <span class="brand-mark">OC</span>
+        <span>OpenCollect</span>
+      </div>
+
+      <nav class="nav-tabs" aria-label="内容频道">
+        <button type="button" class="tab active">收藏</button>
+        <button type="button" class="tab" disabled>小红书</button>
+      </nav>
+
+      <form id="collectForm" class="collect-form">
+        <label class="visually-hidden" for="collectInput">小红书分享文本或链接</label>
+        <div class="collect-box">
+          <textarea
+            id="collectInput"
+            name="input"
+            rows="1"
+            placeholder="粘贴小红书分享文本或链接"
+            required
+          ></textarea>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary">收藏</button>
+          <button type="button" id="sampleButton" class="secondary">多图示例</button>
+        </div>
+      </form>
+    </header>
+
+    <main class="page-shell">
+      <section class="feed-area" aria-label="收藏列表">
+        <div class="feed-head">
+          <div>
+            <h1>收藏</h1>
+            <p>小红书笔记</p>
+          </div>
+          <div class="feed-toolbar">
+            <button type="button" id="clearAllButton" class="feed-clear">清空收藏</button>
+            <span id="countBadge">0</span>
+          </div>
+        </div>
+        <div id="collectionList" class="collection-list"></div>
+      </section>
+
+      <aside class="note-stage" aria-live="polite">
+        <div id="emptyState" class="empty-state">
+          <p>选择一篇笔记查看完整内容</p>
+        </div>
+        <article id="noteView" class="note-view hidden"></article>
+      </aside>
+    </main>
+
+    <div id="editorModal" class="editor-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
+      <form id="editForm" class="editor-dialog">
+        <header class="editor-header">
+          <h2 id="editorTitle">编辑收藏</h2>
+          <button type="button" class="editor-close" data-editor-close aria-label="关闭编辑" title="关闭编辑">×</button>
+        </header>
+
+        <label class="editor-field" for="editTitle">
+          <span>标题</span>
+          <input id="editTitle" name="title" type="text" autocomplete="off" />
+        </label>
+
+        <label class="editor-field" for="editContent">
+          <span>正文</span>
+          <textarea id="editContent" name="content" rows="8"></textarea>
+        </label>
+
+        <label class="editor-field" for="editTags">
+          <span>标签</span>
+          <input id="editTags" name="tags" type="text" autocomplete="off" placeholder="多个标签用逗号或空格分隔" />
+        </label>
+
+        <label class="editor-field" for="editSourceUrl">
+          <span>原文链接</span>
+          <input id="editSourceUrl" name="sourceUrl" type="url" autocomplete="off" />
+        </label>
+
+        <footer class="editor-actions">
+          <button type="button" class="ghost" data-editor-close>取消</button>
+          <button type="submit" class="primary">保存</button>
+        </footer>
+      </form>
+    </div>
+
+    <div id="clearConfirmModal" class="confirm-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="clearConfirmTitle">
+      <section class="confirm-dialog">
+        <header class="confirm-header">
+          <h2 id="clearConfirmTitle">清空全部收藏？</h2>
+          <button type="button" class="confirm-close" data-clear-confirm-close aria-label="关闭确认" title="关闭确认">×</button>
+        </header>
+        <p id="clearConfirmMessage">这个操作会移除当前所有收藏。</p>
+        <footer class="confirm-actions">
+          <button type="button" class="ghost" data-clear-confirm-close>取消</button>
+          <button type="button" id="clearConfirmSubmit" class="danger-primary">清空</button>
+        </footer>
+      </section>
+    </div>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
