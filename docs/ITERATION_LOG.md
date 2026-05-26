@@ -46,3 +46,22 @@
 - 优先做 `P0 后端存储和收藏 API`。
 - 第一批任务建议选择：`OC-P0-001` 到 `OC-P0-004`。
 
+## 2026-05-26 - 确认后端存储与云同步方案
+
+任务：
+- 明确后端技术选型和低成本云同步方案。
+
+完成：
+- 确认后端采用 `Go + Gin`。
+- 确认主存储采用本地 `data/collections.json`。
+- 确认云同步采用可选 `OSS/S3-compatible` 对象存储。
+- 新增 `docs/BACKEND_STORAGE_SYNC_DESIGN.md`，整理完整方案。
+- 更新 `docs/ROADMAP.md`，把 P0 从 SQLite 改为 Go 后端 + JSON Store，把 OSS/S3 同步拆到 P1。
+
+方案边界：
+- 第一阶段不使用 MySQL/Postgres 云数据库。
+- 第一阶段只支持单实例写入，避免多个实例同时覆盖对象存储文件。
+- 前端不直接持有对象存储密钥，所有云同步由后端完成。
+
+下一步建议：
+- 从 `OC-P0-001` 到 `OC-P0-004` 开始实现 Go 后端骨架和本地 JSON Store。
