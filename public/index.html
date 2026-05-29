@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCollect 小红书 PoC</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260529-video-controls" />
   </head>
   <body>
     <header class="app-header" aria-label="顶部导航">
@@ -32,6 +32,7 @@
         <div class="actions">
           <button type="submit" class="primary">收藏</button>
           <button type="button" id="sampleButton" class="secondary">多图示例</button>
+          <button type="button" id="videoSampleButton" class="secondary">视频示例</button>
         </div>
       </form>
     </header>
@@ -44,20 +45,21 @@
             <p>小红书笔记</p>
           </div>
           <div class="feed-toolbar">
+            <div id="syncPanel" class="sync-panel" hidden>
+              <span id="syncStatus" class="sync-status">同步状态加载中</span>
+              <button type="button" id="syncPushButton" class="sync-push">保存并上传</button>
+            </div>
             <button type="button" id="clearAllButton" class="feed-clear">清空收藏</button>
             <span id="countBadge">0</span>
           </div>
         </div>
         <div id="collectionList" class="collection-list"></div>
       </section>
-
-      <aside class="note-stage" aria-live="polite">
-        <div id="emptyState" class="empty-state">
-          <p>选择一篇笔记查看完整内容</p>
-        </div>
-        <article id="noteView" class="note-view hidden"></article>
-      </aside>
     </main>
+
+    <div id="noteModal" class="note-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="noteDetailTitle">
+      <article id="noteView" class="note-view" tabindex="-1"></article>
+    </div>
 
     <div id="editorModal" class="editor-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
       <form id="editForm" class="editor-dialog">
@@ -108,6 +110,6 @@
     </div>
 
     <div id="toast" class="toast hidden" role="status"></div>
-    <script src="/app.js" type="module"></script>
+    <script src="/app.js?v=20260529-video-controls" type="module"></script>
   </body>
 </html>

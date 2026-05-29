@@ -1,0 +1,15 @@
+data/*.json
+data/*.tmp
+.env
+.env.*
+!.env.example
+.gocache/
+.gomodcache/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+/opencollect
+*.test
+.env
+outputs/

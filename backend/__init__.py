@@ -1,0 +1,1 @@
+"""OpenCollect Python backend package."""
