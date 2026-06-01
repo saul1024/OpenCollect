@@ -99,7 +99,7 @@ def create_api_router(
     async def collect(request: CollectRequest):
         input_text = request.input.strip()
         if not input_text:
-            return error_response(400, "EMPTY_INPUT", "请粘贴小红书分享文本或链接")
+            return error_response(400, "EMPTY_INPUT", "请粘贴rednote分享文本或链接")
         try:
             store.assert_base_revision(request.base_revision)
         except StoreError as exc:

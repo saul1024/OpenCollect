@@ -1,12 +1,12 @@
 # OpenCollect
 
-OpenCollect 是一个 UGC 内容收藏 PoC，目前优先支持小红书笔记收藏。目标是把分享链接解析成结构化收藏卡片，并在 Web 端提供接近小红书笔记的浏览体验。
+OpenCollect 是一个 UGC 内容收藏 PoC，目前优先支持rednote笔记收藏。目标是把分享链接解析成结构化收藏卡片，并在 Web 端提供接近rednote笔记的浏览体验。
 
 当前主实现是 Python FastAPI 后端 + 静态前端 + 本地 JSON Store，并支持腾讯云 COS / S3-compatible 对象存储的手动云同步。
 
 ## 功能
 
-- 小红书分享文本或链接收藏
+- rednote分享文本或链接收藏
 - 收藏瀑布流展示
 - 笔记详情浮层
 - 多图轮播切换
@@ -41,7 +41,7 @@ backend/
     media/      # 图片和视频代理
     store/      # JSON Store 和数据模型
     sync/       # COS/S3 同步
-    xhs/        # 小红书解析
+    xhs/        # rednote解析
   tests/        # 后端测试
 data/           # 本地运行时数据，默认不提交
 docs/           # 方案、路线图、迭代日志
@@ -164,8 +164,8 @@ node --check public/app.js
 
 ## 当前限制
 
-- 当前 PoC 首批只支持小红书。
-- 小红书页面结构和访问策略可能变化，解析成功率依赖平台返回的 SSR 数据。
+- 当前 PoC 首批只支持rednote。
+- rednote页面结构和访问策略可能变化，解析成功率依赖平台返回的 SSR 数据。
 - Web 端媒体访问可能需要后端代理，线上部署后会产生一定服务器带宽成本。
 - 多设备编辑同一条收藏时当前不做字段级合并，系统会要求用户选择拉取云端或覆盖云端。
 

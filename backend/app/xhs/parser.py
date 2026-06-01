@@ -39,16 +39,16 @@ class XHSParser:
     async def collect(self, input_text: str) -> dict[str, Any]:
         extracted_url = extract_first_url(input_text)
         if not extracted_url:
-            raise ParserError("没有识别到链接，请粘贴小红书分享文本或 URL", "INVALID_LINK")
+            raise ParserError("没有识别到链接，请粘贴rednote分享文本或 URL", "INVALID_LINK")
 
         final_url = await self.resolve_share_url(extracted_url)
         parsed = urlparse(final_url)
         if not is_xhs_host(parsed.hostname or ""):
-            raise ParserError("当前 PoC 仅支持小红书链接", "INVALID_LINK")
+            raise ParserError("当前 PoC 仅支持rednote链接", "INVALID_LINK")
 
         note_id = extract_note_id(final_url)
         if not note_id:
-            raise ParserError("没有识别到小红书笔记 ID", "INVALID_LINK")
+            raise ParserError("没有识别到rednote笔记 ID", "INVALID_LINK")
 
         html = await self.fetch_text(final_url)
         state = extract_initial_state(html)
@@ -57,7 +57,7 @@ class XHSParser:
             if "xsec_token=" in parsed.query:
                 raise ParserError("页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问", "CONTENT_NOT_FOUND")
             raise ParserError(
-                "链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用小红书 App 分享出来的完整链接或短链",
+                "链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用rednote App 分享出来的完整链接或短链",
                 "MISSING_XSEC_TOKEN",
             )
 
@@ -142,30 +142,30 @@ class XHSParser:
         try:
             response = await self.client.get(raw_url, headers=browser_headers())
         except httpx.HTTPError as exc:
-            raise ParserError("网络异常，无法访问小红书链接", "NETWORK_FAILED") from exc
+            raise ParserError("网络异常，无法访问rednote链接", "NETWORK_FAILED") from exc
         if response.status_code in {403, 429}:
-            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
+            raise ParserError("rednote限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
         if response.status_code == 404:
             raise ParserError("链接无效或笔记不存在", "CONTENT_NOT_FOUND")
         if response.status_code >= 400:
-            raise ParserError(f"小红书页面请求失败：{response.status_code}", "NETWORK_FAILED")
+            raise ParserError(f"rednote页面请求失败：{response.status_code}", "NETWORK_FAILED")
         return str(response.url)
 
     async def fetch_text(self, raw_url: str) -> str:
         try:
             response = await self.client.get(raw_url, headers=browser_headers())
         except httpx.HTTPError as exc:
-            raise ParserError("网络异常，无法访问小红书页面", "NETWORK_FAILED") from exc
+            raise ParserError("网络异常，无法访问rednote页面", "NETWORK_FAILED") from exc
         text = response.text
         if response.status_code in {403, 429}:
-            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
+            raise ParserError("rednote限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
         if response.status_code == 404:
             raise ParserError("链接无效或笔记不存在", "CONTENT_NOT_FOUND")
         has_initial_state = "window.__INITIAL_STATE__" in text
         if not has_initial_state and looks_platform_blocked(text):
-            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
+            raise ParserError("rednote限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
         if "window.__INITIAL_STATE__" not in text and response.status_code >= 400:
-            raise ParserError(f"小红书页面请求失败：{response.status_code}", "NETWORK_FAILED")
+            raise ParserError(f"rednote页面请求失败：{response.status_code}", "NETWORK_FAILED")
         return text
 
 
@@ -289,7 +289,7 @@ def normalize_images(raw_images: list[Any]) -> list[Image]:
 def normalize_author(user: dict[str, Any]) -> Author:
     return Author(
         id=get_string(user, "userId"),
-        name=default_string(first_string(get_string(user, "nickname"), get_string(user, "nickName")), "小红书用户"),
+        name=default_string(first_string(get_string(user, "nickname"), get_string(user, "nickName")), "rednote用户"),
         avatar=normalize_asset_url(get_string(user, "avatar")),
     )
 

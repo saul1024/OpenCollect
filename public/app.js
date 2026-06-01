@@ -377,7 +377,7 @@ function renderList() {
           <span></span>
         </span>
         <strong>暂无收藏</strong>
-        <small>粘贴小红书分享链接，或加载一个多图示例</small>
+        <small>粘贴rednote分享链接，或加载一个多图示例</small>
       </div>
     `;
     return;
@@ -1202,9 +1202,9 @@ function focusCollectionCard(id) {
 function parseFailureMessage(reason) {
   const messages = {
     INVALID_LINK: "链接无效或暂不支持",
-    MISSING_XSEC_TOKEN: "链接缺少 xsec_token，请使用小红书 App 分享链接",
+    MISSING_XSEC_TOKEN: "链接缺少 xsec_token，请使用rednote App 分享链接",
     NETWORK_FAILED: "网络异常，请重试",
-    PLATFORM_BLOCKED: "小红书限制了本次访问，请稍后重试",
+    PLATFORM_BLOCKED: "rednote限制了本次访问，请稍后重试",
     CONTENT_NOT_FOUND: "链接无效、笔记不存在或不可见",
     PARSE_SCHEMA_CHANGED: "页面结构变化，暂时无法解析",
     UNKNOWN: "未知错误"
@@ -1236,7 +1236,7 @@ function parseTags(value) {
 function getPlatformMeta(note) {
   const key = normalizePlatformKey(note?.platform || inferPlatformFromUrl(note?.sourceUrl));
   const platforms = {
-    xiaohongshu: { key: "xiaohongshu", label: "小红书" },
+    xiaohongshu: { key: "xiaohongshu", label: "rednote" },
     douyin: { key: "douyin", label: "抖音" },
     bilibili: { key: "bilibili", label: "B站" },
     youtube: { key: "youtube", label: "YouTube" },
@@ -1250,7 +1250,7 @@ function getPlatformMeta(note) {
 
 function normalizePlatformKey(value) {
   const text = String(value || "").toLowerCase();
-  if (["xiaohongshu", "xhs", "red", "小红书"].includes(text)) return "xiaohongshu";
+  if (["xiaohongshu", "xhs", "red", "rednote"].includes(text)) return "xiaohongshu";
   if (["douyin", "抖音"].includes(text)) return "douyin";
   if (["bilibili", "b站", "哔哩哔哩"].includes(text)) return "bilibili";
   if (["youtube", "yt"].includes(text)) return "youtube";

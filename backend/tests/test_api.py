@@ -113,14 +113,14 @@ def test_collect_duplicate_returns_existing_without_overwrite(tmp_path: Path):
 
 
 def test_collect_parse_error_exposes_reason(tmp_path: Path):
-    parser = QueueParser(ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED"))
+    parser = QueueParser(ParserError("rednote限制了本次访问，请稍后重试", "PLATFORM_BLOCKED"))
     with TestClient(api_app(tmp_path, parser)) as client:
         response = client.post("/api/collect", json={"input": "https://www.xiaohongshu.com/explore/note-1"})
 
     assert response.status_code == 422
     assert response.json() == {
         "error": "PARSE_FAILED",
-        "message": "小红书限制了本次访问，请稍后重试",
+        "message": "rednote限制了本次访问，请稍后重试",
         "reason": "PLATFORM_BLOCKED",
     }
 

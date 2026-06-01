@@ -116,13 +116,13 @@ def test_record_fetch_failure_keeps_existing_collection(tmp_path: Path):
     store = JSONStore(tmp_path / "collections.json")
     store.import_collections([collection("note-1")])
 
-    saved, snapshot = store.record_fetch_failure("note-1", "PLATFORM_BLOCKED", "小红书限制了本次访问")
+    saved, snapshot = store.record_fetch_failure("note-1", "PLATFORM_BLOCKED", "rednote限制了本次访问")
 
     assert snapshot.revision == 2
     assert saved.title == "测试笔记 note-1"
     assert saved.fetch.last_status == "failed"
     assert saved.fetch.last_error_reason == "PLATFORM_BLOCKED"
-    assert saved.fetch.last_error_message == "小红书限制了本次访问"
+    assert saved.fetch.last_error_message == "rednote限制了本次访问"
 
 
 def test_json_store_rejects_stale_base_revision_for_writes(tmp_path: Path):

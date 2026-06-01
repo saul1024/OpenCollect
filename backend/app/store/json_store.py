@@ -544,7 +544,7 @@ def generated_id(collection: Collection) -> str:
 
 def normalize_platform(platform: str, source_url: str) -> str:
     value = platform.strip().lower()
-    if value in {"xiaohongshu", "xhs", "red", "小红书"}:
+    if value in {"xiaohongshu", "xhs", "red", "rednote"}:
         return "xiaohongshu"
     if value in {"douyin", "抖音"}:
         return "douyin"

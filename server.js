@@ -72,7 +72,7 @@ async function handleCollect(req, res) {
   const input = String(body.input || "").trim();
 
   if (!input) {
-    return sendJson(res, 400, { error: "EMPTY_INPUT", message: "请粘贴小红书分享文本或链接" });
+    return sendJson(res, 400, { error: "EMPTY_INPUT", message: "请粘贴rednote分享文本或链接" });
   }
 
   try {
@@ -255,19 +255,19 @@ async function collectXiaohongshu(input) {
   const extractedUrl = extractFirstUrl(input);
 
   if (!extractedUrl) {
-    throw new Error("没有识别到链接，请粘贴小红书分享文本或 URL");
+    throw new Error("没有识别到链接，请粘贴rednote分享文本或 URL");
   }
 
   const finalUrl = await resolveShareUrl(extractedUrl);
   const parsedUrl = new URL(finalUrl);
 
   if (!XHS_HOST_RE.test(parsedUrl.hostname)) {
-    throw new Error("当前 PoC 仅支持小红书链接");
+    throw new Error("当前 PoC 仅支持rednote链接");
   }
 
   const noteId = extractNoteId(finalUrl);
   if (!noteId) {
-    throw new Error("没有识别到小红书笔记 ID");
+    throw new Error("没有识别到rednote笔记 ID");
   }
 
   const html = await fetchText(finalUrl);
@@ -279,7 +279,7 @@ async function collectXiaohongshu(input) {
     throw new Error(
       hasXsecToken
         ? "页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问"
-        : "链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用小红书 App 分享出来的完整链接或短链"
+        : "链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用rednote App 分享出来的完整链接或短链"
     );
   }
 
@@ -333,7 +333,7 @@ async function fetchText(url) {
   const text = await response.text();
 
   if (!text.includes("window.__INITIAL_STATE__") && !response.ok) {
-    throw new Error(`小红书页面请求失败：${response.status}`);
+    throw new Error(`rednote页面请求失败：${response.status}`);
   }
 
   return text;
@@ -398,7 +398,7 @@ function normalizeNote(note, sourceUrl) {
     content: note.desc || "",
     author: {
       id: note.user?.userId || "",
-      name: note.user?.nickname || note.user?.nickName || "小红书用户",
+      name: note.user?.nickname || note.user?.nickName || "rednote用户",
       avatar: normalizeAssetUrl(note.user?.avatar || "")
     },
     images,

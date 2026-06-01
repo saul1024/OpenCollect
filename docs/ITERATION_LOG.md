@@ -31,7 +31,7 @@
 
 完成：
 - `POST /api/collect` 改为重复收藏显式返回 `duplicated=true` 和 `existingId`，重复时不写盘、不增加 revision、不覆盖用户编辑内容。
-- 收藏去重使用 `id`、`sourceId` 和规范化 `canonicalUrl`，同一小红书笔记的参数差异链接会识别为同一条。
+- 收藏去重使用 `id`、`sourceId` 和规范化 `canonicalUrl`，同一rednote笔记的参数差异链接会识别为同一条。
 - 解析错误增加稳定 `reason`：`INVALID_LINK`、`MISSING_XSEC_TOKEN`、`NETWORK_FAILED`、`PLATFORM_BLOCKED`、`CONTENT_NOT_FOUND`、`PARSE_SCHEMA_CHANGED`、`UNKNOWN`。
 - 新增 `POST /api/collections/{id}/refresh`，支持重新抓取已有收藏；成功时刷新平台字段，保留用户编辑过的标题、正文、标签和原文链接。
 - 新增 `fetch` 状态字段，记录最近抓取成功/尝试时间、失败 reason 和失败信息。
@@ -52,7 +52,7 @@
 
 遗留问题：
 - 当前未新增浏览器自动化测试；前端交互通过 JS 语法检查和后端契约测试兜底，后续可补 Playwright 覆盖重复定位、刷新按钮和视频回退。
-- 真实小红书可用性仍受平台风控、页面结构和资源链接有效期影响。
+- 真实rednote可用性仍受平台风控、页面结构和资源链接有效期影响。
 
 ## 2026-05-29 - 移除 originVideoKey 获取链路
 
@@ -61,26 +61,26 @@
 - `OC-P2-007`
 
 完成：
-- 删除小红书 Web 详情补充链路，不再启动本地 Chrome 调用 `/api/sns/web/v1/feed` 补充视频字段。
+- 删除rednote Web 详情补充链路，不再启动本地 Chrome 调用 `/api/sns/web/v1/feed` 补充视频字段。
 - 删除 `originVideoKey` / `originVideoUrl` 的解析、拼接、测试和环境变量配置。
 - 从 Video API schema 移除 `originVideoKey` / `originVideoUrl` 输出字段。
 - 移除显式 `websockets` 依赖。
 
 决策：
-- 放弃继续获取 `originVideoKey`。当前小红书 Web 端不稳定返回该字段，后续视频能力转向保存平台返回的结构化 stream 元数据。
+- 放弃继续获取 `originVideoKey`。当前rednote Web 端不稳定返回该字段，后续视频能力转向保存平台返回的结构化 stream 元数据。
 
 下一步：
 - 进入 `OC-P2-008`，评估 `streams[]`、`bizId`、`md5`、`streamType`、码率、分辨率等字段的入库设计。
 
-## 2026-05-29 - 小红书视频详情字段探索
+## 2026-05-29 - rednote视频详情字段探索
 
 任务：
 - `OC-P2-006`
 - `OC-P2-007`
 
 完成：
-- 新增小红书 Web 详情补充链路：对缺少 `originVideoKey` 的视频笔记，通过本地 Chrome 页面上下文调用 `/api/sns/web/v1/feed`。
-- 后端不硬编码小红书签名算法，复用页面自身 Web 模块发起同站详情请求。
+- 新增rednote Web 详情补充链路：对缺少 `originVideoKey` 的视频笔记，通过本地 Chrome 页面上下文调用 `/api/sns/web/v1/feed`。
+- 后端不硬编码rednote签名算法，复用页面自身 Web 模块发起同站详情请求。
 - `normalize_video` 和详情补充逻辑支持从 `originVideoKey` / `origin_video_key` 读取并保存原视频资源 key。
 - 显式声明 `websockets` 依赖，避免依赖 uvicorn 的间接安装。
 
@@ -111,7 +111,7 @@
 - 明确账号绑定自动导入暂时搁置，标记为 `Blocked`。
 
 当前 PoC 状态：
-- 已支持小红书单条收藏解析。
+- 已支持rednote单条收藏解析。
 - 已支持收藏瀑布流和笔记详情。
 - 已支持多图切换和视频播放代理。
 - 已支持编辑、删除、清空、撤销。
@@ -165,7 +165,7 @@
 
 遗留问题：
 - OSS/S3 云同步还未实现，转入 P1。
-- 小红书真实页面解析和视频流仍需要用更多真实链接回归；平台结构或风控变化会影响成功率。
+- rednote真实页面解析和视频流仍需要用更多真实链接回归；平台结构或风控变化会影响成功率。
 - 当前仍是单实例文件写入模型，暂不支持多实例同时写同一个对象存储文件。
 
 下一步：
@@ -179,7 +179,7 @@
 完成：
 - 新增 `uv` 项目配置：`pyproject.toml` 和 `uv.lock`。
 - 新增 Python 后端目录：`backend/app/`。
-- 用 FastAPI 迁移收藏 API、静态文件服务、JSON Store、小红书解析、图片代理和视频代理。
+- 用 FastAPI 迁移收藏 API、静态文件服务、JSON Store、rednote解析、图片代理和视频代理。
 - 保持 `data/collections.json` schema、API 路径和前端响应结构兼容。
 - Python 服务可运行在 `3002`，并保持 API 与 JSON schema 兼容。
 
@@ -189,13 +189,13 @@
 - `uv run pytest`
 - `curl` 验证 Python 服务静态首页和 `/api/collections`。
 - Node live check 验证 Python API 导入、编辑、删除。
-- `/api/sample` 返回多图小红书示例。
-- `/api/collect` 实际解析小红书示例并返回 8 张图片，验证后删除临时收藏。
+- `/api/sample` 返回多图rednote示例。
+- `/api/collect` 实际解析rednote示例并返回 8 张图片，验证后删除临时收藏。
 
 遗留问题：
 - 旧 Go 后端在后续清理迭代中移除。
 - OSS/S3 云同步仍未实现，继续放在 P1。
-- 真实小红书解析仍受平台页面结构和访问限制影响，需要持续回归。
+- 真实rednote解析仍受平台页面结构和访问限制影响，需要持续回归。
 
 下一步：
 - 开始 `P1 OSS/S3 云同步` 的 Python 实现。
@@ -249,7 +249,7 @@
 完成：
 - 给 `styles.css` 和 `app.js` 加版本参数，避免浏览器继续使用旧资源导致点击卡片不弹出详情。
 - 收藏列表从 CSS 多列纵向填充改为按可用宽度计算列数，并把卡片横向分发到列容器，避免内容一直堆在左侧。
-- 保留卡片不同封面比例，继续维持接近小红书的瀑布流观感。
+- 保留卡片不同封面比例，继续维持接近rednote的瀑布流观感。
 
 验证：
 - `node --check public/app.js`
@@ -338,7 +338,7 @@
 完成：
 - 前端所有写操作携带 `baseRevision`，后端对收藏、编辑、删除、清空、导入、重新抓取做 revision 校验。
 - 旧页面提交会返回 `409 CONFLICT` 和 `currentRevision`；前端收到后刷新最新数据，编辑弹窗保留草稿。
-- 收藏和重新抓取在旧 revision 下会先做本地校验，不再先调用小红书解析。
+- 收藏和重新抓取在旧 revision 下会先做本地校验，不再先调用rednote解析。
 - `POST /api/sync/push` 上传前拉取云端并比较 `sync-base.json`；云端变化时阻止静默覆盖。
 - 本地和云端都是纯新增时自动合并为新 revision；同一条编辑、删除、清空等不可安全合并场景进入 `remote_conflict`。
 - 前端在云端冲突时展示“拉取云端”和“覆盖云端”；拉取会备份本地，覆盖会备份远端和本地。
