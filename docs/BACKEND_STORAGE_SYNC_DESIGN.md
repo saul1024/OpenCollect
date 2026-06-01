@@ -335,7 +335,7 @@ data/collections.json
 说明：
 
 - 媒体字段只保存原始 URL 和元数据，不默认下载图片或视频；视频播放优先使用平台返回的分发 URL。
-- 小红书 Web 端已不稳定返回 `originVideoKey`，当前方案不再采集或输出该字段；后续如需多清晰度视频能力，应扩展结构化 `streams[]` 字段。
+- 小红书 Web 端已不稳定返回 `originVideoKey`，当前方案不再采集或输出该字段；视频能力保存平台返回的结构化 `streams[]` 候选流和 `bizId`。
 - `deletedAt` 预留给软删除。PoC 第一版可以物理删除。
 - `revision` 每次写入递增，用于同步和排查覆盖问题。
 
@@ -622,6 +622,7 @@ GET    /api/collections
 GET    /api/collections/:id
 POST   /api/collect
 PATCH  /api/collections/:id
+POST   /api/collections/:id/refresh
 DELETE /api/collections/:id
 DELETE /api/collections
 POST   /api/collections/import-local

@@ -9,7 +9,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from backend.app.media.video_urls import normalize_xhs_video_url
-from backend.app.store.models import Author, Collection, Image, Stats, Video
+from backend.app.store.models import Author, Collection, FetchState, Image, Stats, Video, VideoStream
 from backend.app.store.json_store import now_utc
 
 
@@ -23,7 +23,10 @@ HASH_TAG_RE = re.compile(r"#([^#\[\]\s]+)(?:\[话题\])?#")
 
 
 class ParserError(Exception):
-    pass
+    def __init__(self, message: str, reason: str = "UNKNOWN"):
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
 
 
 class XHSParser:
@@ -36,28 +39,31 @@ class XHSParser:
     async def collect(self, input_text: str) -> dict[str, Any]:
         extracted_url = extract_first_url(input_text)
         if not extracted_url:
-            raise ParserError("没有识别到链接，请粘贴小红书分享文本或 URL")
+            raise ParserError("没有识别到链接，请粘贴小红书分享文本或 URL", "INVALID_LINK")
 
         final_url = await self.resolve_share_url(extracted_url)
         parsed = urlparse(final_url)
         if not is_xhs_host(parsed.hostname or ""):
-            raise ParserError("当前 PoC 仅支持小红书链接")
+            raise ParserError("当前 PoC 仅支持小红书链接", "INVALID_LINK")
 
         note_id = extract_note_id(final_url)
         if not note_id:
-            raise ParserError("没有识别到小红书笔记 ID")
+            raise ParserError("没有识别到小红书笔记 ID", "INVALID_LINK")
 
         html = await self.fetch_text(final_url)
         state = extract_initial_state(html)
         detail = find_note_detail(state, note_id)
         if detail is None:
             if "xsec_token=" in parsed.query:
-                raise ParserError("页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问")
-            raise ParserError("链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用小红书 App 分享出来的完整链接或短链")
+                raise ParserError("页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问", "CONTENT_NOT_FOUND")
+            raise ParserError(
+                "链接缺少 xsec_token，裸笔记链接通常拿不到完整内容。请使用小红书 App 分享出来的完整链接或短链",
+                "MISSING_XSEC_TOKEN",
+            )
 
         note_map = get_map(detail, "note")
         if not note_map:
-            raise ParserError("页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问")
+            raise ParserError("页面没有返回完整笔记数据，可能已失效、需登录或被平台限制访问", "CONTENT_NOT_FOUND")
 
         return {
             "source": {
@@ -133,14 +139,33 @@ class XHSParser:
         host = parsed.hostname or ""
         if not is_xhs_host(host) and not is_xhslink_host(host):
             return raw_url
-        response = await self.client.get(raw_url, headers=browser_headers())
+        try:
+            response = await self.client.get(raw_url, headers=browser_headers())
+        except httpx.HTTPError as exc:
+            raise ParserError("网络异常，无法访问小红书链接", "NETWORK_FAILED") from exc
+        if response.status_code in {403, 429}:
+            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
+        if response.status_code == 404:
+            raise ParserError("链接无效或笔记不存在", "CONTENT_NOT_FOUND")
+        if response.status_code >= 400:
+            raise ParserError(f"小红书页面请求失败：{response.status_code}", "NETWORK_FAILED")
         return str(response.url)
 
     async def fetch_text(self, raw_url: str) -> str:
-        response = await self.client.get(raw_url, headers=browser_headers())
+        try:
+            response = await self.client.get(raw_url, headers=browser_headers())
+        except httpx.HTTPError as exc:
+            raise ParserError("网络异常，无法访问小红书页面", "NETWORK_FAILED") from exc
         text = response.text
+        if response.status_code in {403, 429}:
+            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
+        if response.status_code == 404:
+            raise ParserError("链接无效或笔记不存在", "CONTENT_NOT_FOUND")
+        has_initial_state = "window.__INITIAL_STATE__" in text
+        if not has_initial_state and looks_platform_blocked(text):
+            raise ParserError("小红书限制了本次访问，请稍后重试", "PLATFORM_BLOCKED")
         if "window.__INITIAL_STATE__" not in text and response.status_code >= 400:
-            raise ParserError(f"小红书页面请求失败：{response.status_code}")
+            raise ParserError(f"小红书页面请求失败：{response.status_code}", "NETWORK_FAILED")
         return text
 
 
@@ -176,14 +201,14 @@ def extract_note_id(raw_url: str) -> str:
 def extract_initial_state(html: str) -> dict[str, Any]:
     match = INITIAL_STATE_RE.search(html)
     if not match:
-        raise ParserError("页面中没有找到 SSR 数据")
+        raise ParserError("页面结构变化，暂时无法解析", "PARSE_SCHEMA_CHANGED")
     raw = match.group(1).strip().rstrip(";").replace(":undefined", ":null")
     try:
         state = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ParserError(f"页面 SSR 数据无法解析：{exc}") from exc
+        raise ParserError("页面结构变化，暂时无法解析", "PARSE_SCHEMA_CHANGED") from exc
     if not isinstance(state, dict):
-        raise ParserError("页面 SSR 数据无法解析")
+        raise ParserError("页面结构变化，暂时无法解析", "PARSE_SCHEMA_CHANGED")
     return state
 
 
@@ -232,6 +257,7 @@ def normalize_note(note: dict[str, Any], source_url: str) -> Collection:
         createdAt=created_at,
         updatedAt=updated_at,
         collectedAt=now_utc(),
+        fetch=FetchState(lastSuccessAt=now_utc(), lastAttemptAt=now_utc(), lastStatus="success"),
     )
 
 
@@ -293,29 +319,28 @@ def normalize_video(raw_video: dict[str, Any], images: list[Image]) -> Video | N
     if not raw_video:
         return None
     media_v2 = parse_json_string(get_string(raw_video, "mediaV2"))
-    streams: list[dict[str, Any]] = []
-    streams.extend(extract_streams(get_map(get_map(raw_video, "media"), "stream")))
-    streams.extend(extract_streams(get_map(media_v2, "stream")))
+    raw_streams: list[dict[str, Any]] = []
+    raw_streams.extend(extract_streams(get_map(get_map(raw_video, "media"), "stream")))
+    raw_streams.extend(extract_streams(get_map(media_v2, "stream")))
+    streams = normalize_video_streams(raw_streams)
     if not streams:
         return None
 
     selected = streams[0]
     for stream in streams:
-        if get_bool(stream, "defaultStream") or get_bool(stream, "default_stream"):
+        if get_bool(stream.raw, "defaultStream") or get_bool(stream.raw, "default_stream"):
             selected = stream
             break
-        if get_video_url(stream):
+        if stream.url:
             selected = stream
 
-    video_url = normalize_xhs_video_url(get_video_url(selected))
+    video_url = normalize_xhs_video_url(selected.url)
     if not video_url:
         return None
 
     poster = images[0].url if images else ""
     duration = first_int(
-        get_int(selected, "duration"),
-        get_int(selected, "videoDuration"),
-        get_int(selected, "video_duration"),
+        selected.duration,
         get_int(get_map(get_map(raw_video, "media"), "video"), "duration"),
         get_int(get_map(media_v2, "video"), "duration"),
         get_int(get_map(raw_video, "capa"), "duration"),
@@ -326,12 +351,85 @@ def normalize_video(raw_video: dict[str, Any], images: list[Image]) -> Video | N
     return Video(
         url=video_url,
         poster=poster,
-        width=first_int(get_int(selected, "width"), get_int(get_map(media_v2, "video"), "width")),
-        height=first_int(get_int(selected, "height"), get_int(get_map(media_v2, "video"), "height")),
+        width=first_int(selected.width, get_int(get_map(media_v2, "video"), "width")),
+        height=first_int(selected.height, get_int(get_map(media_v2, "video"), "height")),
         duration=duration,
-        format=default_string(get_string(selected, "format"), "mp4"),
-        codec=default_string(first_string(get_string(selected, "videoCodec"), get_string(selected, "video_codec")), "h264"),
+        format=default_string(selected.format, "mp4"),
+        codec=default_string(selected.codec, "h264"),
+        bizId=first_string(
+            get_string(get_map(get_map(raw_video, "media"), "video"), "bizId"),
+            get_string(get_map(get_map(raw_video, "media"), "video"), "biz_id"),
+            get_string(get_map(media_v2, "video"), "bizId"),
+            get_string(get_map(media_v2, "video"), "biz_id"),
+        ),
+        streams=[stream.model for stream in streams],
     )
+
+
+class ParsedVideoStream:
+    def __init__(self, raw: dict[str, Any], model: VideoStream):
+        self.raw = raw
+        self.model = model
+
+    @property
+    def url(self) -> str:
+        return self.model.url
+
+    @property
+    def width(self) -> int:
+        return self.model.width
+
+    @property
+    def height(self) -> int:
+        return self.model.height
+
+    @property
+    def duration(self) -> int:
+        return self.model.duration
+
+    @property
+    def format(self) -> str:
+        return self.model.format
+
+    @property
+    def codec(self) -> str:
+        return self.model.codec
+
+
+def normalize_video_streams(raw_streams: list[dict[str, Any]]) -> list[ParsedVideoStream]:
+    streams: list[ParsedVideoStream] = []
+    seen: set[str] = set()
+    for raw in raw_streams:
+        url = normalize_xhs_video_url(get_video_url(raw))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        duration = first_int(
+            get_int(raw, "duration"),
+            get_int(raw, "videoDuration"),
+            get_int(raw, "video_duration"),
+        )
+        if duration > 1000:
+            duration //= 1000
+        backup_urls = [
+            normalize_xhs_video_url(value)
+            for value in get_video_backup_urls(raw)
+            if normalize_xhs_video_url(value) and normalize_xhs_video_url(value) != url
+        ]
+        model = VideoStream(
+            url=url,
+            backupUrls=unique_strings(backup_urls),
+            width=get_int(raw, "width"),
+            height=get_int(raw, "height"),
+            duration=duration,
+            format=default_string(get_string(raw, "format"), "mp4"),
+            codec=default_string(first_string(get_string(raw, "videoCodec"), get_string(raw, "video_codec")), "h264"),
+            quality=first_string(get_string(raw, "quality"), get_string(raw, "qualityType"), get_string(raw, "quality_type")),
+            streamType=first_string(get_string(raw, "streamType"), get_string(raw, "stream_type")),
+            bizId=first_string(get_string(raw, "bizId"), get_string(raw, "biz_id")),
+        )
+        streams.append(ParsedVideoStream(raw, model))
+    return streams
 
 
 def extract_streams(stream_map: dict[str, Any]) -> list[dict[str, Any]]:
@@ -353,6 +451,15 @@ def get_video_url(stream: dict[str, Any]) -> str:
         if urls and isinstance(urls[0], str):
             return urls[0]
     return ""
+
+
+def get_video_backup_urls(stream: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for key in ("backupUrls", "backup_urls"):
+        for url in get_array(stream, key):
+            if isinstance(url, str) and url:
+                urls.append(url)
+    return urls
 
 
 def build_feed_note_url(note_id: str, xsec_token: str) -> str:
@@ -419,6 +526,22 @@ def is_xhslink_host(host: str) -> bool:
     return host == "xhslink.com" or host.endswith(".xhslink.com")
 
 
+def looks_platform_blocked(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "captcha",
+            "访问过于频繁",
+            "安全验证",
+            "滑块验证",
+            "登录后查看",
+        )
+    )
+
+
 def parse_json_string(value: str) -> dict[str, Any]:
     if not value:
         return {}
@@ -441,6 +564,14 @@ def get_array(data: dict[str, Any], key: str) -> list[Any]:
         return []
     value = data.get(key)
     return value if isinstance(value, list) else []
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def get_any(data: dict[str, Any], key: str) -> Any:

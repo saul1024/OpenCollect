@@ -64,6 +64,65 @@ def test_json_store_dedupes_by_source_url(tmp_path: Path):
     assert snapshot.collections[0].title == "覆盖后的标题"
 
 
+def test_add_front_duplicate_does_not_write_or_overwrite_existing(tmp_path: Path):
+    store = JSONStore(tmp_path / "collections.json")
+    first = collection("note-1")
+    first.title = "用户保留标题"
+    second = collection("note-2")
+    second.id = ""
+    second.source_id = ""
+    second.source_url = "https://www.xiaohongshu.com/explore/note-1?xsec_token=changed&extra=1"
+    second.title = "不应覆盖"
+
+    first_result = store.add_front(first)
+    second_result = store.add_front(second)
+    snapshot = store.snapshot()
+
+    assert first_result.duplicated is False
+    assert first_result.snapshot.revision == 1
+    assert second_result.duplicated is True
+    assert second_result.snapshot.revision == 1
+    assert second_result.collection.title == "用户保留标题"
+    assert snapshot.revision == 1
+    assert len(snapshot.collections) == 1
+    assert snapshot.collections[0].title == "用户保留标题"
+
+
+def test_refresh_preserves_user_modified_fields_and_records_success(tmp_path: Path):
+    store = JSONStore(tmp_path / "collections.json")
+    store.import_collections([collection("note-1")])
+    store.patch("note-1", CollectionPatch(title="用户标题", tags=["用户标签"]))
+
+    refreshed = collection("note-1")
+    refreshed.title = "平台新标题"
+    refreshed.content = "平台新正文"
+    refreshed.tags = ["平台标签"]
+    refreshed.stats.likes = "99"
+
+    saved, snapshot = store.refresh("note-1", refreshed)
+
+    assert snapshot.revision == 3
+    assert saved.title == "用户标题"
+    assert saved.content == "平台新正文"
+    assert saved.tags == ["用户标签"]
+    assert saved.stats.likes == "99"
+    assert saved.fetch.last_status == "success"
+    assert saved.fetch.last_error_reason == ""
+
+
+def test_record_fetch_failure_keeps_existing_collection(tmp_path: Path):
+    store = JSONStore(tmp_path / "collections.json")
+    store.import_collections([collection("note-1")])
+
+    saved, snapshot = store.record_fetch_failure("note-1", "PLATFORM_BLOCKED", "小红书限制了本次访问")
+
+    assert snapshot.revision == 2
+    assert saved.title == "测试笔记 note-1"
+    assert saved.fetch.last_status == "failed"
+    assert saved.fetch.last_error_reason == "PLATFORM_BLOCKED"
+    assert saved.fetch.last_error_message == "小红书限制了本次访问"
+
+
 def collection(collection_id: str) -> Collection:
     return Collection(
         id=collection_id,

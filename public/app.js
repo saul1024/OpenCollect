@@ -33,6 +33,7 @@ let renderedColumnCount = 0;
 let resizeTimer = 0;
 let syncState = null;
 let isSyncing = false;
+const refreshingIds = new Set();
 const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("opencollect-sync") : null;
 
@@ -175,6 +176,15 @@ async function collect(value) {
     if (!response.ok) throw new Error(payload.message || "解析失败");
 
     upsertNote(payload.note);
+    if (payload.duplicated) {
+      activeId = payload.existingId || payload.note?.id || "";
+      await refreshSyncState();
+      render();
+      focusCollectionCard(activeId);
+      showToast("已收藏过，已定位到原收藏");
+      return;
+    }
+
     activeId = "";
     await refreshSyncState();
     render();
@@ -389,6 +399,10 @@ function renderList() {
   list.querySelectorAll('[data-action="delete-note"]').forEach((button) => {
     button.addEventListener("click", () => deleteNote(button.dataset.id));
   });
+
+  list.querySelectorAll('[data-action="refresh-note"]').forEach((button) => {
+    button.addEventListener("click", () => refreshNote(button.dataset.id));
+  });
 }
 
 function renderCollectionCard(note, index) {
@@ -422,6 +436,7 @@ function renderCollectionCard(note, index) {
         </span>
       </button>
       <span class="card-tools" aria-label="收藏操作">
+        <button type="button" data-action="refresh-note" data-id="${escapeAttr(note.id)}" ${refreshingIds.has(note.id) ? "disabled" : ""}>${refreshingIds.has(note.id) ? "刷新中" : "刷新"}</button>
         <button type="button" data-action="edit-note" data-id="${escapeAttr(note.id)}">编辑</button>
         <button type="button" class="danger" data-action="delete-note" data-id="${escapeAttr(note.id)}">删除</button>
       </span>
@@ -460,6 +475,7 @@ function renderActiveNote() {
   const authorName = note.author?.name || "未知作者";
   const authorAvatar = note.author?.avatar ? imageProxy(note.author.avatar) : "";
   const platform = getPlatformMeta(note);
+  const isRefreshing = refreshingIds.has(note.id);
 
   noteView.innerHTML = `
     <header class="note-header">
@@ -472,6 +488,7 @@ function renderActiveNote() {
       </div>
       <div class="note-actions">
         <a class="source-link" href="${escapeAttr(note.sourceUrl)}" target="_blank" rel="noreferrer">原文</a>
+        <button type="button" class="note-tool" data-action="refresh-active" ${isRefreshing ? "disabled" : ""}>${isRefreshing ? "刷新中" : "重新抓取"}</button>
         <button type="button" class="note-tool" data-action="edit-active">编辑</button>
         <button type="button" class="note-tool danger" data-action="delete-active">删除</button>
         <button type="button" class="detail-close" data-action="collapse-detail" aria-label="关闭详情" title="关闭详情">×</button>
@@ -483,6 +500,7 @@ function renderActiveNote() {
     <div class="note-copy">
       <h2 id="noteDetailTitle">${escapeHtml(note.title || "无标题笔记")}</h2>
       <p>${formatContent(note.content)}</p>
+      ${renderFetchNotice(note)}
       ${note.tags?.length ? `<div class="tags">${note.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
     </div>
 
@@ -500,6 +518,10 @@ function renderActiveNote() {
 
   noteView.querySelector('[data-action="edit-active"]')?.addEventListener("click", () => {
     openEditor(note.id);
+  });
+
+  noteView.querySelector('[data-action="refresh-active"]')?.addEventListener("click", () => {
+    refreshNote(note.id);
   });
 
   noteView.querySelector('[data-action="delete-active"]')?.addEventListener("click", () => {
@@ -592,6 +614,13 @@ function renderMedia(note) {
       }
     </div>
   `;
+}
+
+function renderFetchNotice(note) {
+  const state = note.fetch || {};
+  if (state.lastStatus !== "failed") return "";
+  const message = state.lastErrorMessage || parseFailureMessage(state.lastErrorReason) || "最近一次抓取失败";
+  return `<div class="fetch-notice">最近抓取失败：${escapeHtml(message)}</div>`;
 }
 
 function setupCarousel() {
@@ -712,8 +741,14 @@ function mediaProxy(url) {
 }
 
 function getVideoProxyCandidates(video) {
-  if (!video?.url) return [];
-  return getXhsVideoUrlCandidates(video.url).map((candidate) => mediaProxy(candidate));
+  if (!video) return [];
+  const rawUrls = [];
+  if (video.url) rawUrls.push(video.url);
+  (video.streams || []).forEach((stream) => {
+    if (stream?.url) rawUrls.push(stream.url);
+    (stream?.backupUrls || []).forEach((url) => rawUrls.push(url));
+  });
+  return uniqueValues(rawUrls.flatMap((url) => getXhsVideoUrlCandidates(url))).map((candidate) => mediaProxy(candidate));
 }
 
 function getImageProxyUrls(images) {
@@ -974,6 +1009,37 @@ async function saveAndUpload() {
   }
 }
 
+async function refreshNote(id) {
+  if (!id || refreshingIds.has(id)) return;
+  const existing = notes.find((note) => note.id === id);
+  if (!existing) return;
+
+  refreshingIds.add(id);
+  render();
+  try {
+    const payload = await requestJson(`/api/collections/${encodeURIComponent(id)}/refresh`, { method: "POST" });
+    if (payload.collection) {
+      upsertNote(payload.collection);
+      activeId = payload.collection.id;
+    }
+    await refreshSyncState();
+    render();
+    broadcastUpdate("collections-updated");
+    if (payload.refreshed) {
+      showToast("已重新抓取");
+    } else {
+      showToast(payload.message || parseFailureMessage(payload.reason) || "重新抓取失败");
+    }
+  } catch (error) {
+    await refreshSyncState();
+    render();
+    showToast(error.message || "重新抓取失败");
+  } finally {
+    refreshingIds.delete(id);
+    render();
+  }
+}
+
 async function reloadFromBackend() {
   try {
     await loadRemoteNotes();
@@ -1016,9 +1082,39 @@ async function requestJson(url, options = {}) {
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
   if (!response.ok) {
-    throw new Error(payload.message || "请求失败");
+    const error = new Error(payload.message || "请求失败");
+    error.payload = payload;
+    error.reason = payload.reason || payload.error || "";
+    throw error;
   }
   return payload;
+}
+
+function focusCollectionCard(id) {
+  if (!id) return;
+  window.requestAnimationFrame(() => {
+    const card = list.querySelector(`[data-id="${cssEscape(id)}"]`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  });
+}
+
+function parseFailureMessage(reason) {
+  const messages = {
+    INVALID_LINK: "链接无效或暂不支持",
+    MISSING_XSEC_TOKEN: "链接缺少 xsec_token，请使用小红书 App 分享链接",
+    NETWORK_FAILED: "网络异常，请重试",
+    PLATFORM_BLOCKED: "小红书限制了本次访问，请稍后重试",
+    CONTENT_NOT_FOUND: "链接无效、笔记不存在或不可见",
+    PARSE_SCHEMA_CHANGED: "页面结构变化，暂时无法解析",
+    UNKNOWN: "未知错误"
+  };
+  return messages[reason] || "";
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 function loadLocalNotes() {

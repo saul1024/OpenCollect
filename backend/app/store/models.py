@@ -30,6 +30,21 @@ class Video(APIModel):
     duration: int = 0
     format: str = ""
     codec: str = ""
+    biz_id: str = Field("", alias="bizId")
+    streams: list["VideoStream"] = Field(default_factory=list)
+
+
+class VideoStream(APIModel):
+    url: str = ""
+    backup_urls: list[str] = Field(default_factory=list, alias="backupUrls")
+    width: int = 0
+    height: int = 0
+    duration: int = 0
+    format: str = ""
+    codec: str = ""
+    quality: str = ""
+    stream_type: str = Field("", alias="streamType")
+    biz_id: str = Field("", alias="bizId")
 
 
 class Stats(APIModel):
@@ -37,6 +52,14 @@ class Stats(APIModel):
     collects: str = ""
     comments: str = ""
     shares: str = ""
+
+
+class FetchState(APIModel):
+    last_success_at: str = Field("", alias="lastSuccessAt")
+    last_attempt_at: str = Field("", alias="lastAttemptAt")
+    last_status: str = Field("", alias="lastStatus")
+    last_error_reason: str = Field("", alias="lastErrorReason")
+    last_error_message: str = Field("", alias="lastErrorMessage")
 
 
 class Collection(APIModel):
@@ -59,6 +82,8 @@ class Collection(APIModel):
     updated_at: str = Field("", alias="updatedAt")
     collected_at: str = Field("", alias="collectedAt")
     deleted_at: str = Field("", alias="deletedAt")
+    fetch: FetchState = Field(default_factory=FetchState)
+    user_modified_fields: list[str] = Field(default_factory=list, alias="userModifiedFields")
 
 
 class DataFile(APIModel):

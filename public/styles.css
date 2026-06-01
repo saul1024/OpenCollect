@@ -1043,6 +1043,17 @@ textarea::placeholder {
   line-height: 26px;
 }
 
+.fetch-notice {
+  border: 1px solid rgba(255, 36, 66, 0.24);
+  border-radius: 8px;
+  background: var(--surface-warm);
+  color: var(--red);
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 800;
+}
+
 .topic,
 .tags span {
   color: #0b63c7;

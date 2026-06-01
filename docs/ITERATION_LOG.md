@@ -23,6 +23,37 @@
 - ...
 ```
 
+## 2026-06-01 - P2 解析稳定性、去重和重新抓取
+
+任务：
+- `OC-P2-001` 到 `OC-P2-005`
+- `OC-P2-008`
+
+完成：
+- `POST /api/collect` 改为重复收藏显式返回 `duplicated=true` 和 `existingId`，重复时不写盘、不增加 revision、不覆盖用户编辑内容。
+- 收藏去重使用 `id`、`sourceId` 和规范化 `canonicalUrl`，同一小红书笔记的参数差异链接会识别为同一条。
+- 解析错误增加稳定 `reason`：`INVALID_LINK`、`MISSING_XSEC_TOKEN`、`NETWORK_FAILED`、`PLATFORM_BLOCKED`、`CONTENT_NOT_FOUND`、`PARSE_SCHEMA_CHANGED`、`UNKNOWN`。
+- 新增 `POST /api/collections/{id}/refresh`，支持重新抓取已有收藏；成功时刷新平台字段，保留用户编辑过的标题、正文、标签和原文链接。
+- 新增 `fetch` 状态字段，记录最近抓取成功/尝试时间、失败 reason 和失败信息。
+- 视频字段新增 `bizId` 和 `streams[]`，保存主播放地址、备用地址、清晰度、编码、尺寸、时长等候选流。
+- 前端重复收藏会定位已有卡片；卡片和详情页新增“刷新/重新抓取”；刷新失败保留旧收藏并展示最近失败原因；视频播放会尝试结构化候选流。
+
+验证：
+- `uv run pytest`
+- `uv run python -m compileall backend/app backend/tests`
+- `node --check public/app.js`
+
+验收覆盖：
+- 后端测试覆盖重复收藏不新增、不覆盖用户编辑、revision 不变化。
+- 后端测试覆盖结构化解析错误 reason。
+- 后端测试覆盖重新抓取成功、失败保留旧收藏、刷新冲突返回 `409 CONFLICT`。
+- Store 测试覆盖用户编辑字段保留、抓取失败状态持久化。
+- 解析器测试覆盖视频候选流入库和 SSR 结构变化 reason。
+
+遗留问题：
+- 当前未新增浏览器自动化测试；前端交互通过 JS 语法检查和后端契约测试兜底，后续可补 Playwright 覆盖重复定位、刷新按钮和视频回退。
+- 真实小红书可用性仍受平台风控、页面结构和资源链接有效期影响。
+
 ## 2026-05-29 - 移除 originVideoKey 获取链路
 
 任务：

@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.app.media.proxy import MediaProxy, MediaProxyError
-from backend.app.store.json_store import CollectionNotFound, JSONStore, StoreError
+from backend.app.store.json_store import CollectionConflict, CollectionNotFound, JSONStore, StoreError
 from backend.app.store.models import Collection, CollectionPatch, DataFile, model_to_api
 from backend.app.sync import SyncManager
 from backend.app.xhs.parser import ParserError, XHSParser
@@ -92,13 +92,52 @@ def create_api_router(
             return error_response(400, "EMPTY_INPUT", "请粘贴小红书分享文本或链接")
         try:
             result = await parser.collect(input_text)
-            note, _ = store.upsert_front(result["note"])
+            save_result = store.add_front(result["note"])
         except ParserError as exc:
-            return error_response(422, "PARSE_FAILED", str(exc))
+            return parser_error_response(exc)
         except StoreError as exc:
             return store_error_response(exc)
-        result["note"] = model_to_api(note)
+        result["note"] = model_to_api(save_result.collection)
+        result["duplicated"] = save_result.duplicated
+        result["existingId"] = save_result.collection.id if save_result.duplicated else ""
+        result["revision"] = save_result.snapshot.revision
+        result["updatedAt"] = save_result.snapshot.updated_at
         return result
+
+    @router.post("/collections/{collection_id}/refresh")
+    async def refresh_collection(collection_id: str):
+        existing = store.get(collection_id)
+        if existing is None:
+            return error_response(404, "NOT_FOUND", "收藏不存在")
+        source_url = existing.source_url or existing.canonical_url
+        if not source_url:
+            return error_response(422, "REFRESH_FAILED", "收藏缺少原文链接", reason="INVALID_LINK")
+        try:
+            result = await parser.collect(source_url)
+            refreshed, snapshot = store.refresh(collection_id, result["note"])
+        except ParserError as exc:
+            try:
+                failed, snapshot = store.record_fetch_failure(collection_id, exc.reason, exc.message)
+            except StoreError as store_exc:
+                return store_error_response(store_exc)
+            return {
+                "refreshed": False,
+                "collection": model_to_api(failed),
+                "reason": exc.reason,
+                "message": exc.message,
+                "revision": snapshot.revision,
+                "updatedAt": snapshot.updated_at,
+            }
+        except StoreError as exc:
+            return store_error_response(exc)
+        return {
+            "refreshed": True,
+            "collection": model_to_api(refreshed),
+            "reason": "",
+            "message": "",
+            "revision": snapshot.revision,
+            "updatedAt": snapshot.updated_at,
+        }
 
     @router.get("/sample")
     async def sample():
@@ -157,11 +196,17 @@ def snapshot_payload(snapshot: DataFile) -> dict:
     }
 
 
-def error_response(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": code, "message": message})
+def error_response(status: int, code: str, message: str, **extra) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"error": code, "message": message, **extra})
+
+
+def parser_error_response(exc: ParserError) -> JSONResponse:
+    return error_response(422, "PARSE_FAILED", exc.message, reason=exc.reason)
 
 
 def store_error_response(exc: StoreError) -> JSONResponse:
     if isinstance(exc, CollectionNotFound):
         return error_response(404, "NOT_FOUND", "收藏不存在")
+    if isinstance(exc, CollectionConflict):
+        return error_response(409, "CONFLICT", "刷新结果与已有收藏重复")
     return error_response(500, "STORE_ERROR", str(exc))

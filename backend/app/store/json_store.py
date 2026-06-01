@@ -7,12 +7,13 @@ import logging
 import os
 import tempfile
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 from backend.app.media.video_urls import normalize_xhs_video_url
-from backend.app.store.models import Collection, CollectionPatch, DataFile, model_to_api
+from backend.app.store.models import Collection, CollectionPatch, DataFile, FetchState, model_to_api
 
 
 SCHEMA_VERSION = 1
@@ -25,6 +26,17 @@ class StoreError(Exception):
 
 class CollectionNotFound(StoreError):
     pass
+
+
+class CollectionConflict(StoreError):
+    pass
+
+
+@dataclass(frozen=True)
+class SaveFrontResult:
+    collection: Collection
+    snapshot: DataFile
+    duplicated: bool = False
 
 
 class JSONStore:
@@ -49,6 +61,37 @@ class JSONStore:
                     return self._clone_collection(collection)
         return None
 
+    def add_front(self, collection: Collection) -> SaveFrontResult:
+        saved: Collection | None = None
+        duplicated = False
+        snapshot_for_hook: DataFile | None = None
+
+        with self._lock:
+            now = now_utc()
+            next_data = self._clone_data(self._data)
+            normalized = normalize_collection(collection, now)
+            if not normalized.collected_at:
+                normalized.collected_at = now
+            mark_fetch_success(normalized, now)
+
+            for index, existing in enumerate(next_data.collections):
+                if same_collection(existing, normalized):
+                    saved = self._clone_collection(existing)
+                    duplicated = True
+                    snapshot = self._clone_data(self._data)
+                    break
+            else:
+                next_data.collections.insert(0, normalized)
+                saved = normalized
+                snapshot = self._commit_locked(next_data)
+                snapshot_for_hook = snapshot
+
+        if saved is None:
+            raise StoreError("收藏保存失败")
+        if snapshot_for_hook is not None:
+            self._run_on_write(snapshot_for_hook)
+        return SaveFrontResult(self._clone_collection(saved), snapshot, duplicated)
+
     def upsert_front(self, collection: Collection) -> tuple[Collection, DataFile]:
         saved: Collection | None = None
 
@@ -58,11 +101,13 @@ class JSONStore:
             normalized = normalize_collection(collection, now)
             if not normalized.collected_at:
                 normalized.collected_at = now
+            mark_fetch_success(normalized, now)
 
             for index, existing in enumerate(next_data.collections):
                 if same_collection(existing, normalized):
-                    if not normalized.collected_at:
-                        normalized.collected_at = existing.collected_at or now
+                    normalized.collected_at = existing.collected_at or now
+                    normalized.user_modified_fields = existing.user_modified_fields
+                    preserve_user_modified_fields(normalized, existing)
                     next_data.collections[index] = normalized
                     saved = normalized
                     return
@@ -116,8 +161,15 @@ class JSONStore:
                     collection.content = patch.content.strip()
                 if patch.tags is not None:
                     collection.tags = sanitize_tags(patch.tags)
+                    mark_user_modified(collection, "tags")
                 if patch.source_url is not None and patch.source_url.strip():
                     collection.source_url = patch.source_url.strip()
+                    collection.canonical_url = canonical_source_url(collection.source_url, collection.platform)
+                    mark_user_modified(collection, "sourceUrl")
+                if patch.title is not None:
+                    mark_user_modified(collection, "title")
+                if patch.content is not None:
+                    mark_user_modified(collection, "content")
                 next_data.collections[index] = normalize_collection(collection, now)
                 saved = next_data.collections[index]
                 return
@@ -156,6 +208,59 @@ class JSONStore:
         snapshot = self._update(mutate)
         return previous, snapshot
 
+    def refresh(self, collection_id: str, refreshed: Collection) -> tuple[Collection, DataFile]:
+        saved: Collection | None = None
+
+        def mutate(next_data: DataFile) -> None:
+            nonlocal saved
+            now = now_utc()
+            target_index = -1
+            existing: Collection | None = None
+            for index, collection in enumerate(next_data.collections):
+                if collection.id == collection_id:
+                    target_index = index
+                    existing = collection
+                    break
+            if existing is None:
+                raise CollectionNotFound("收藏不存在")
+
+            normalized = normalize_collection(refreshed, now)
+            for index, other in enumerate(next_data.collections):
+                if index != target_index and same_collection(other, normalized):
+                    raise CollectionConflict("刷新结果与已有收藏重复")
+
+            merged = merge_refreshed_collection(existing, normalized, now)
+            next_data.collections[target_index] = normalize_collection(merged, now)
+            saved = next_data.collections[target_index]
+
+        snapshot = self._update(mutate)
+        if saved is None:
+            raise CollectionNotFound("收藏不存在")
+        return self._clone_collection(saved), snapshot
+
+    def record_fetch_failure(self, collection_id: str, reason: str, message: str) -> tuple[Collection, DataFile]:
+        saved: Collection | None = None
+
+        def mutate(next_data: DataFile) -> None:
+            nonlocal saved
+            now = now_utc()
+            for index, collection in enumerate(next_data.collections):
+                if collection.id != collection_id:
+                    continue
+                collection.fetch.last_attempt_at = now
+                collection.fetch.last_status = "failed"
+                collection.fetch.last_error_reason = reason
+                collection.fetch.last_error_message = message
+                next_data.collections[index] = normalize_collection(collection, now)
+                saved = next_data.collections[index]
+                return
+            raise CollectionNotFound("收藏不存在")
+
+        snapshot = self._update(mutate)
+        if saved is None:
+            raise CollectionNotFound("收藏不存在")
+        return self._clone_collection(saved), snapshot
+
     def _load(self) -> DataFile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
@@ -187,20 +292,27 @@ class JSONStore:
         with self._lock:
             next_data = self._clone_data(self._data)
             mutator(next_data)
-            next_data.schema_version = SCHEMA_VERSION
-            next_data.revision += 1
-            next_data.updated_at = now_utc()
-            if next_data.collections is None:
-                next_data.collections = []
-            write_json_atomic(self.path, next_data)
-            self._data = next_data
-            snapshot = self._clone_data(next_data)
-        if self._on_write is not None:
-            try:
-                self._on_write(self.path, snapshot)
-            except Exception as exc:
-                logger.warning("post-write hook failed: %s", exc)
+            snapshot = self._commit_locked(next_data)
+        self._run_on_write(snapshot)
         return snapshot
+
+    def _commit_locked(self, next_data: DataFile) -> DataFile:
+        next_data.schema_version = SCHEMA_VERSION
+        next_data.revision += 1
+        next_data.updated_at = now_utc()
+        if next_data.collections is None:
+            next_data.collections = []
+        write_json_atomic(self.path, next_data)
+        self._data = next_data
+        return self._clone_data(next_data)
+
+    def _run_on_write(self, snapshot: DataFile) -> None:
+        if self._on_write is None:
+            return
+        try:
+            self._on_write(self.path, snapshot)
+        except Exception as exc:
+            logger.warning("post-write hook failed: %s", exc)
 
     @staticmethod
     def _clone_data(data: DataFile) -> DataFile:
@@ -242,11 +354,13 @@ def normalize_collection(collection: Collection, now: str) -> Collection:
     collection.source_url = collection.source_url.strip()
     collection.canonical_url = collection.canonical_url.strip()
     collection.platform = normalize_platform(collection.platform, collection.source_url)
+    collection.canonical_url = canonical_source_url(collection.canonical_url or collection.source_url, collection.platform)
     collection.type = collection.type.strip() or "normal"
     collection.title = collection.title.strip() or "无标题笔记"
     collection.author.name = collection.author.name.strip() or "未知作者"
     collection.tags = sanitize_tags(collection.tags)
     collection.images = collection.images or []
+    collection.user_modified_fields = sanitize_user_modified_fields(collection.user_modified_fields)
     normalize_collection_video(collection)
 
     if not collection.stats.likes:
@@ -272,6 +386,9 @@ def normalize_collection_video(collection: Collection) -> None:
     if collection.video is None:
         return
     collection.video.url = normalize_xhs_video_url(collection.video.url)
+    for stream in collection.video.streams:
+        stream.url = normalize_xhs_video_url(stream.url)
+        stream.backup_urls = [normalize_xhs_video_url(url) for url in stream.backup_urls if url]
 
 
 def needs_data_migration(raw: object) -> bool:
@@ -300,7 +417,87 @@ def same_collection(left: Collection, right: Collection) -> bool:
         return True
     if left.source_id and right.source_id and left.platform == right.platform and left.source_id == right.source_id:
         return True
-    return bool(left.source_url and right.source_url and left.source_url == right.source_url)
+    left_key = left.canonical_url or canonical_source_url(left.source_url, left.platform)
+    right_key = right.canonical_url or canonical_source_url(right.source_url, right.platform)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def merge_refreshed_collection(existing: Collection, refreshed: Collection, now: str) -> Collection:
+    merged = Collection.model_validate(model_to_api(refreshed))
+    merged.id = existing.id
+    merged.collected_at = existing.collected_at or now
+    merged.user_modified_fields = sanitize_user_modified_fields(existing.user_modified_fields)
+    preserve_user_modified_fields(merged, existing)
+    mark_fetch_success(merged, now)
+    return merged
+
+
+def preserve_user_modified_fields(target: Collection, existing: Collection) -> None:
+    fields = set(existing.user_modified_fields)
+    if "title" in fields:
+        target.title = existing.title
+    if "content" in fields:
+        target.content = existing.content
+    if "tags" in fields:
+        target.tags = existing.tags
+    if "sourceUrl" in fields:
+        target.source_url = existing.source_url
+        target.canonical_url = existing.canonical_url
+
+
+def mark_fetch_success(collection: Collection, now: str) -> None:
+    collection.fetch = FetchState(
+        lastSuccessAt=now,
+        lastAttemptAt=now,
+        lastStatus="success",
+        lastErrorReason="",
+        lastErrorMessage="",
+    )
+
+
+def mark_user_modified(collection: Collection, field: str) -> None:
+    fields = sanitize_user_modified_fields(collection.user_modified_fields)
+    if field not in fields:
+        fields.append(field)
+    collection.user_modified_fields = fields
+
+
+def sanitize_user_modified_fields(fields: list[str]) -> list[str]:
+    allowed = {"title", "content", "tags", "sourceUrl"}
+    result: list[str] = []
+    for field in fields:
+        if field in allowed and field not in result:
+            result.append(field)
+    return result
+
+
+def canonical_source_url(raw_url: str, platform: str = "") -> str:
+    if not raw_url:
+        return ""
+    parsed = urlparse(raw_url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return raw_url.strip()
+    host = (parsed.hostname or "").lower()
+    normalized_platform = platform or infer_platform(raw_url)
+    if normalized_platform == "xiaohongshu" or "xiaohongshu.com" in host:
+        note_id = extract_xhs_note_id(parsed.path)
+        if note_id:
+            return f"https://www.xiaohongshu.com/explore/{note_id}"
+    netloc = host
+    if parsed.port:
+        netloc = f"{host}:{parsed.port}"
+    path = parsed.path.rstrip("/") or "/"
+    return parsed._replace(scheme=parsed.scheme.lower(), netloc=netloc, path=path, fragment="").geturl()
+
+
+def extract_xhs_note_id(path: str) -> str:
+    parts = [part for part in path.strip("/").split("/") if part]
+    for index, part in enumerate(parts):
+        if part in {"explore", "item"} and index + 1 < len(parts):
+            return parts[index + 1]
+    if len(parts) >= 3 and parts[0] == "discovery" and parts[1] == "item":
+        return parts[2]
+    return ""
 
 
 def generated_id(collection: Collection) -> str:
