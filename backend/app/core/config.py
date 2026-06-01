@@ -80,6 +80,14 @@ class Settings:
     def sync_state_path(self) -> Path:
         return self.data_dir / "sync-state.json"
 
+    @property
+    def sync_base_path(self) -> Path:
+        return self.data_dir / "sync-base.json"
+
+    @property
+    def sync_local_backup_dir(self) -> Path:
+        return self.data_dir / "local-backups"
+
 
 def load_settings() -> Settings:
     load_dotenv()

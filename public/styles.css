@@ -323,6 +323,25 @@ textarea::placeholder {
   color: var(--red);
 }
 
+.sync-panel.is-conflict {
+  border-color: rgba(255, 36, 66, 0.42);
+  background: var(--surface-warm);
+}
+
+.sync-panel.is-conflict .sync-status {
+  color: var(--red);
+}
+
+.sync-secondary {
+  border: 1px solid #dfe2e7;
+  background: #fff;
+  color: #343942;
+}
+
+.sync-danger {
+  background: var(--red);
+}
+
 .feed-clear {
   min-height: 32px;
   border: 1px solid #dfe2e7;

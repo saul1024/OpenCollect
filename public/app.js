@@ -6,6 +6,8 @@ const clearAllButton = document.querySelector("#clearAllButton");
 const syncPanel = document.querySelector("#syncPanel");
 const syncStatus = document.querySelector("#syncStatus");
 const syncPushButton = document.querySelector("#syncPushButton");
+const syncPullButton = document.querySelector("#syncPullButton");
+const syncForcePushButton = document.querySelector("#syncForcePushButton");
 const list = document.querySelector("#collectionList");
 const noteModal = document.querySelector("#noteModal");
 const noteView = document.querySelector("#noteView");
@@ -33,6 +35,7 @@ let renderedColumnCount = 0;
 let resizeTimer = 0;
 let syncState = null;
 let isSyncing = false;
+let currentRevision = 0;
 const refreshingIds = new Set();
 const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("opencollect-sync") : null;
@@ -57,6 +60,8 @@ videoSampleButton.addEventListener("click", () => {
 
 clearAllButton.addEventListener("click", openClearConfirm);
 syncPushButton.addEventListener("click", saveAndUpload);
+syncPullButton?.addEventListener("click", pullCloudVersion);
+syncForcePushButton?.addEventListener("click", () => saveAndUpload({ force: true }));
 
 if (syncChannel) {
   syncChannel.addEventListener("message", (event) => {
@@ -165,15 +170,14 @@ async function collect(value) {
   setBusy(submit, true, "解析中");
 
   try {
-    const response = await fetch("/api/collect", {
+    const payload = await requestJson("/api/collect", {
       method: "POST",
       headers: {
         "content-type": "application/json"
       },
-      body: JSON.stringify({ input: value })
+      body: JSON.stringify({ input: value, baseRevision: currentRevision })
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "解析失败");
+    updateRevisionFromPayload(payload);
 
     upsertNote(payload.note);
     if (payload.duplicated) {
@@ -191,6 +195,7 @@ async function collect(value) {
     broadcastUpdate("collections-updated");
     showToast("已收藏");
   } catch (error) {
+    if (await handleConflict(error)) return;
     showToast(error.message || "解析失败");
   } finally {
     setBusy(submit, false, "收藏");
@@ -239,8 +244,9 @@ async function clearAllNotes() {
   closeEditor();
   closeClearConfirm();
   try {
-    const payload = await requestJson("/api/collections", { method: "DELETE" });
+    const payload = await requestJson(`/api/collections?baseRevision=${encodeURIComponent(currentRevision)}`, { method: "DELETE" });
     notes = payload.collections || [];
+    updateRevisionFromPayload(payload);
     await refreshSyncState();
     render();
     broadcastUpdate("collections-updated");
@@ -254,6 +260,7 @@ async function clearAllNotes() {
     notes = previousNotes;
     activeId = previousActiveId;
     render();
+    if (await handleConflict(error)) return;
     showToast(error.message || "清空失败");
   }
 }
@@ -270,8 +277,9 @@ async function deleteNote(id) {
   if (activeId === id) activeId = "";
   if (editingId === id) closeEditor();
   try {
-    const payload = await requestJson(`/api/collections/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const payload = await requestJson(`/api/collections/${encodeURIComponent(id)}?baseRevision=${encodeURIComponent(currentRevision)}`, { method: "DELETE" });
     notes = payload.collections || notes;
+    updateRevisionFromPayload(payload);
     await refreshSyncState();
     render();
     broadcastUpdate("collections-updated");
@@ -285,6 +293,7 @@ async function deleteNote(id) {
     notes.splice(Math.min(index, notes.length), 0, deletedNote);
     activeId = previousActiveId;
     render();
+    if (await handleConflict(error)) return;
     showToast(error.message || "删除失败");
   }
 }
@@ -331,16 +340,19 @@ async function saveEditor() {
         title: nextTitle,
         content: nextContent,
         tags: parseTags(editTags.value),
-        sourceUrl: nextSourceUrl || notes[index].sourceUrl
+        sourceUrl: nextSourceUrl || notes[index].sourceUrl,
+        baseRevision: currentRevision
       })
     });
     notes[index] = payload.collection;
+    updateRevisionFromPayload(payload);
     closeEditor();
     await refreshSyncState();
     render();
     broadcastUpdate("collections-updated");
     showToast("已保存");
   } catch (error) {
+    if (await handleConflict(error, { keepEditor: true })) return;
     showToast(error.message || "保存失败");
   }
 }
@@ -912,15 +924,19 @@ function renderSyncState() {
 
   const dirty = hasDirtySync();
   const status = String(readSyncField("status") || "");
+  const remoteConflict = status === "remote_conflict";
   const failed = status === "push_failed" || (dirty && Boolean(getSyncError(syncState)));
   const lastPushAt = readSyncField("last_push_at") || readSyncField("lastPushAt");
 
   syncPanel.classList.toggle("is-dirty", dirty && !failed);
   syncPanel.classList.toggle("is-failed", failed);
   syncPanel.classList.toggle("is-syncing", isSyncing);
+  syncPanel.classList.toggle("is-conflict", remoteConflict);
 
   if (isSyncing) {
     syncStatus.textContent = "上传中";
+  } else if (remoteConflict) {
+    syncStatus.textContent = "云端冲突";
   } else if (failed) {
     syncStatus.textContent = "上传失败";
   } else if (dirty) {
@@ -931,8 +947,17 @@ function renderSyncState() {
     syncStatus.textContent = "已同步";
   }
 
+  syncPushButton.hidden = remoteConflict;
   syncPushButton.disabled = isSyncing || !dirty;
   syncPushButton.textContent = isSyncing ? "上传中" : "保存并上传";
+  if (syncPullButton) {
+    syncPullButton.hidden = !remoteConflict;
+    syncPullButton.disabled = isSyncing;
+  }
+  if (syncForcePushButton) {
+    syncForcePushButton.hidden = !remoteConflict;
+    syncForcePushButton.disabled = isSyncing;
+  }
 }
 
 function hasDirtySync() {
@@ -972,6 +997,7 @@ function broadcastUpdate(type) {
 async function loadRemoteNotes() {
   const payload = await requestJson("/api/collections");
   notes = Array.isArray(payload.collections) ? payload.collections : [];
+  updateRevisionFromPayload(payload);
   return notes;
 }
 
@@ -984,18 +1010,33 @@ async function refreshSyncState() {
   return syncState;
 }
 
-async function saveAndUpload() {
+async function saveAndUpload(options = {}) {
   if (!hasDirtySync() || isSyncing) return;
 
   isSyncing = true;
   renderSyncState();
   try {
-    const payload = await requestJson("/api/sync/push", { method: "POST" });
+    const payload = await requestJson("/api/sync/push", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ force: Boolean(options.force) })
+    });
     syncState = payload.sync || payload;
+    if (syncState.status === "synced_auto_merged" || syncState.status === "synced_overwrote_remote") {
+      await loadRemoteNotes();
+    }
     renderSyncState();
     broadcastUpdate("sync-state-updated");
-    if (hasDirtySync()) {
+    if (syncState.status === "remote_conflict") {
+      showToast("云端已有新版本，请选择拉取云端或覆盖云端");
+    } else if (hasDirtySync()) {
       showToast(getSyncError(syncState) || "上传失败，请重试");
+    } else if (syncState.status === "synced_auto_merged") {
+      showToast("已合并云端新增并上传");
+    } else if (syncState.status === "synced_overwrote_remote") {
+      showToast("已覆盖云端并上传");
     } else {
       showToast("已保存并上传");
     }
@@ -1003,6 +1044,28 @@ async function saveAndUpload() {
     await refreshSyncState();
     renderSyncState();
     showToast(error.message || "上传失败，请重试");
+  } finally {
+    isSyncing = false;
+    renderSyncState();
+  }
+}
+
+async function pullCloudVersion() {
+  if (isSyncing) return;
+  isSyncing = true;
+  renderSyncState();
+  try {
+    const payload = await requestJson("/api/sync/pull", { method: "POST" });
+    syncState = payload.sync || payload;
+    notes = Array.isArray(payload.collections) ? payload.collections : notes;
+    updateRevisionFromPayload(payload);
+    render();
+    broadcastUpdate("sync-updated");
+    showToast(syncState.local_backup_path ? "已拉取云端，本地更改已备份" : "已拉取云端");
+  } catch (error) {
+    await refreshSyncState();
+    renderSyncState();
+    showToast(error.message || "拉取云端失败");
   } finally {
     isSyncing = false;
     renderSyncState();
@@ -1017,11 +1080,18 @@ async function refreshNote(id) {
   refreshingIds.add(id);
   render();
   try {
-    const payload = await requestJson(`/api/collections/${encodeURIComponent(id)}/refresh`, { method: "POST" });
+    const payload = await requestJson(`/api/collections/${encodeURIComponent(id)}/refresh`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ baseRevision: currentRevision })
+    });
     if (payload.collection) {
       upsertNote(payload.collection);
       activeId = payload.collection.id;
     }
+    updateRevisionFromPayload(payload);
     await refreshSyncState();
     render();
     broadcastUpdate("collections-updated");
@@ -1033,6 +1103,7 @@ async function refreshNote(id) {
   } catch (error) {
     await refreshSyncState();
     render();
+    if (await handleConflict(error)) return;
     showToast(error.message || "重新抓取失败");
   } finally {
     refreshingIds.delete(id);
@@ -1069,12 +1140,41 @@ async function importCollections(collections) {
     headers: {
       "content-type": "application/json"
     },
-    body: JSON.stringify({ collections })
+    body: JSON.stringify({ collections, baseRevision: currentRevision })
   });
   notes = Array.isArray(payload.collections) ? payload.collections : [];
+  updateRevisionFromPayload(payload);
   await refreshSyncState();
   broadcastUpdate("collections-updated");
   return notes;
+}
+
+async function handleConflict(error, options = {}) {
+  if (error?.payload?.error !== "CONFLICT") return false;
+  const draft = options.keepEditor
+    ? {
+        title: editTitle.value,
+        content: editContent.value,
+        tags: editTags.value,
+        sourceUrl: editSourceUrl.value
+      }
+    : null;
+  await reloadFromBackend();
+  if (draft) {
+    editTitle.value = draft.title;
+    editContent.value = draft.content;
+    editTags.value = draft.tags;
+    editSourceUrl.value = draft.sourceUrl;
+  }
+  showToast(error.payload.message || "数据已在其他页面更新，请重新确认");
+  return true;
+}
+
+function updateRevisionFromPayload(payload) {
+  const revision = Number(payload?.revision);
+  if (Number.isFinite(revision)) {
+    currentRevision = revision;
+  }
 }
 
 async function requestJson(url, options = {}) {

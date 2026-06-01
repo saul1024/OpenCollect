@@ -329,3 +329,26 @@
 - 新增 `POST /api/sync/push`，保留 `POST /api/sync/retry` 兼容入口。
 - 前端增加“保存并上传”按钮、同步状态、离开页面提示和同浏览器多页面刷新。
 - 文档移除 `SYNC_MODE=auto|manual` 规划，明确云同步固定为手动上传。
+
+## 2026-06-01 - 实施 P2.6 多页面和冲突防护
+
+任务：
+- `OC-P2.6-001` 到 `OC-P2.6-007`
+
+完成：
+- 前端所有写操作携带 `baseRevision`，后端对收藏、编辑、删除、清空、导入、重新抓取做 revision 校验。
+- 旧页面提交会返回 `409 CONFLICT` 和 `currentRevision`；前端收到后刷新最新数据，编辑弹窗保留草稿。
+- 收藏和重新抓取在旧 revision 下会先做本地校验，不再先调用小红书解析。
+- `POST /api/sync/push` 上传前拉取云端并比较 `sync-base.json`；云端变化时阻止静默覆盖。
+- 本地和云端都是纯新增时自动合并为新 revision；同一条编辑、删除、清空等不可安全合并场景进入 `remote_conflict`。
+- 前端在云端冲突时展示“拉取云端”和“覆盖云端”；拉取会备份本地，覆盖会备份远端和本地。
+- 更新 `README.md`、`docs/ROADMAP.md`、`docs/BACKEND_STORAGE_SYNC_DESIGN.md` 的 P2.6 行为和验收标准。
+
+验证：
+- `uv run pytest`，39 个后端测试通过。
+- `uv run python -m compileall backend/app backend/tests`
+- `node --check public/app.js`
+- 本地服务 `http://127.0.0.1:3002/` 启动成功，`/`、`/api/collections`、`/api/sync/status`、`/api/sample` 冒烟均返回 200。
+
+遗留问题：
+- 多设备编辑同一条收藏当前不做字段级合并或冲突副本，按 P2.6 验收口径进入手动“拉取云端 / 覆盖云端”处理。

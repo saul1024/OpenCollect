@@ -32,6 +32,12 @@ class CollectionConflict(StoreError):
     pass
 
 
+class RevisionConflict(StoreError):
+    def __init__(self, current_revision: int):
+        super().__init__("数据已在其他页面更新")
+        self.current_revision = current_revision
+
+
 @dataclass(frozen=True)
 class SaveFrontResult:
     collection: Collection
@@ -50,6 +56,15 @@ class JSONStore:
         with self._lock:
             return self._clone_data(self._data)
 
+    def assert_base_revision(self, base_revision: int | None) -> None:
+        with self._lock:
+            self._ensure_base_revision(base_revision)
+
+    def reload_from_disk(self) -> DataFile:
+        with self._lock:
+            self._data = self._load()
+            return self._clone_data(self._data)
+
     def list(self) -> list[Collection]:
         with self._lock:
             return [self._clone_collection(item) for item in self._data.collections]
@@ -61,12 +76,13 @@ class JSONStore:
                     return self._clone_collection(collection)
         return None
 
-    def add_front(self, collection: Collection) -> SaveFrontResult:
+    def add_front(self, collection: Collection, base_revision: int | None = None) -> SaveFrontResult:
         saved: Collection | None = None
         duplicated = False
         snapshot_for_hook: DataFile | None = None
 
         with self._lock:
+            self._ensure_base_revision(base_revision)
             now = now_utc()
             next_data = self._clone_data(self._data)
             normalized = normalize_collection(collection, now)
@@ -92,10 +108,11 @@ class JSONStore:
             self._run_on_write(snapshot_for_hook)
         return SaveFrontResult(self._clone_collection(saved), snapshot, duplicated)
 
-    def upsert_front(self, collection: Collection) -> tuple[Collection, DataFile]:
+    def upsert_front(self, collection: Collection, base_revision: int | None = None) -> tuple[Collection, DataFile]:
         saved: Collection | None = None
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal saved
             now = now_utc()
             normalized = normalize_collection(collection, now)
@@ -120,11 +137,12 @@ class JSONStore:
             raise StoreError("收藏保存失败")
         return self._clone_collection(saved), snapshot
 
-    def import_collections(self, collections: list[Collection]) -> tuple[int, int, DataFile]:
+    def import_collections(self, collections: list[Collection], base_revision: int | None = None) -> tuple[int, int, DataFile]:
         imported = 0
         updated = 0
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal imported, updated
             now = now_utc()
             for collection in collections:
@@ -146,10 +164,11 @@ class JSONStore:
         snapshot = self._update(mutate)
         return imported, updated, snapshot
 
-    def patch(self, collection_id: str, patch: CollectionPatch) -> tuple[Collection, DataFile]:
+    def patch(self, collection_id: str, patch: CollectionPatch, base_revision: int | None = None) -> tuple[Collection, DataFile]:
         saved: Collection | None = None
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal saved
             now = now_utc()
             for index, collection in enumerate(next_data.collections):
@@ -180,10 +199,11 @@ class JSONStore:
             raise CollectionNotFound("收藏不存在")
         return self._clone_collection(saved), snapshot
 
-    def delete(self, collection_id: str) -> tuple[Collection, DataFile]:
+    def delete(self, collection_id: str, base_revision: int | None = None) -> tuple[Collection, DataFile]:
         deleted: Collection | None = None
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal deleted
             for index, collection in enumerate(next_data.collections):
                 if collection.id == collection_id:
@@ -197,10 +217,11 @@ class JSONStore:
             raise CollectionNotFound("收藏不存在")
         return self._clone_collection(deleted), snapshot
 
-    def clear(self) -> tuple[list[Collection], DataFile]:
+    def clear(self, base_revision: int | None = None) -> tuple[list[Collection], DataFile]:
         previous: list[Collection] = []
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal previous
             previous = [self._clone_collection(item) for item in next_data.collections]
             next_data.collections = []
@@ -208,10 +229,11 @@ class JSONStore:
         snapshot = self._update(mutate)
         return previous, snapshot
 
-    def refresh(self, collection_id: str, refreshed: Collection) -> tuple[Collection, DataFile]:
+    def refresh(self, collection_id: str, refreshed: Collection, base_revision: int | None = None) -> tuple[Collection, DataFile]:
         saved: Collection | None = None
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal saved
             now = now_utc()
             target_index = -1
@@ -238,10 +260,11 @@ class JSONStore:
             raise CollectionNotFound("收藏不存在")
         return self._clone_collection(saved), snapshot
 
-    def record_fetch_failure(self, collection_id: str, reason: str, message: str) -> tuple[Collection, DataFile]:
+    def record_fetch_failure(self, collection_id: str, reason: str, message: str, base_revision: int | None = None) -> tuple[Collection, DataFile]:
         saved: Collection | None = None
 
         def mutate(next_data: DataFile) -> None:
+            self._ensure_base_revision(base_revision)
             nonlocal saved
             now = now_utc()
             for index, collection in enumerate(next_data.collections):
@@ -260,6 +283,14 @@ class JSONStore:
         if saved is None:
             raise CollectionNotFound("收藏不存在")
         return self._clone_collection(saved), snapshot
+
+    def replace_snapshot(self, snapshot: DataFile) -> DataFile:
+        with self._lock:
+            next_data = self._clone_data(snapshot)
+            write_json_atomic(self.path, next_data)
+            self._data = next_data
+            saved = self._clone_data(next_data)
+        return saved
 
     def _load(self) -> DataFile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +326,12 @@ class JSONStore:
             snapshot = self._commit_locked(next_data)
         self._run_on_write(snapshot)
         return snapshot
+
+    def _ensure_base_revision(self, base_revision: int | None) -> None:
+        if base_revision is None:
+            return
+        if base_revision != self._data.revision:
+            raise RevisionConflict(self._data.revision)
 
     def _commit_locked(self, next_data: DataFile) -> DataFile:
         next_data.schema_version = SCHEMA_VERSION

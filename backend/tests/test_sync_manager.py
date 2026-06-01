@@ -5,7 +5,7 @@ from pathlib import Path
 
 from backend.app.core.config import Settings, SyncSettings
 from backend.app.store.json_store import JSONStore
-from backend.app.store.models import DataFile, model_to_api
+from backend.app.store.models import CollectionPatch, DataFile, model_to_api
 from backend.app.sync.manager import SyncManager
 from backend.tests.test_json_store import collection
 
@@ -26,6 +26,7 @@ class FakeSyncer:
         if self.push_error is not None:
             raise self.push_error
         self.pushes.append(data)
+        self.remote = data
 
     def backup(self, data: bytes, revision: int) -> str:
         self.backups.append((data, revision))
@@ -151,6 +152,114 @@ def test_sync_status_does_not_expose_cloud_secrets(tmp_path: Path):
     assert "secret_access_key" not in state
     assert settings.sync.access_key_id not in raw_state
     assert settings.sync.secret_access_key not in raw_state
+
+
+def test_sync_manager_auto_merges_remote_and_local_additions(tmp_path: Path):
+    base = DataFile(
+        schemaVersion=1,
+        revision=1,
+        updatedAt="2026-05-27T00:00:00Z",
+        collections=[collection("base-note")],
+    )
+    syncer = FakeSyncer(remote=json.dumps(model_to_api(base)).encode())
+    settings = sync_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+
+    _, _, local_snapshot = store.import_collections([collection("local-note")])
+    remote = DataFile(
+        schemaVersion=1,
+        revision=2,
+        updatedAt="2026-05-28T00:00:00Z",
+        collections=[collection("base-note"), collection("remote-note")],
+    )
+    syncer.remote = json.dumps(model_to_api(remote)).encode()
+
+    state = manager.push_now(settings.collections_path, local_snapshot)
+    pushed = json.loads(syncer.pushes[-1].decode())
+
+    assert state.status == "synced_auto_merged"
+    assert state.dirty is False
+    assert state.last_pushed_revision == 3
+    assert pushed["revision"] == 3
+    assert {item["id"] for item in pushed["collections"]} == {"base-note", "local-note", "remote-note"}
+    assert JSONStore(settings.collections_path).snapshot().revision == 3
+
+
+def test_sync_manager_remote_edit_requires_manual_conflict(tmp_path: Path):
+    base = DataFile(
+        schemaVersion=1,
+        revision=1,
+        updatedAt="2026-05-27T00:00:00Z",
+        collections=[collection("base-note")],
+    )
+    syncer = FakeSyncer(remote=json.dumps(model_to_api(base)).encode())
+    settings = sync_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+
+    edited = collection("base-note")
+    edited.title = "云端编辑"
+    remote = DataFile(schemaVersion=1, revision=2, updatedAt="2026-05-28T00:00:00Z", collections=[edited])
+    syncer.remote = json.dumps(model_to_api(remote)).encode()
+    patched, local_snapshot = store.patch("base-note", CollectionPatch(title="本地编辑"))
+
+    state = manager.push_now(settings.collections_path, local_snapshot)
+
+    assert patched.title == "本地编辑"
+    assert state.status == "remote_conflict"
+    assert state.dirty is True
+    assert state.pending_revision == local_snapshot.revision
+    assert state.remote_revision == 2
+    assert state.conflict_type == "manual_required"
+    assert syncer.pushes == []
+
+
+def test_sync_manager_force_push_overwrites_remote_conflict(tmp_path: Path):
+    base = DataFile(schemaVersion=1, revision=1, collections=[collection("base-note")])
+    syncer = FakeSyncer(remote=json.dumps(model_to_api(base)).encode())
+    settings = sync_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+
+    edited = collection("base-note")
+    edited.title = "云端编辑"
+    remote = DataFile(schemaVersion=1, revision=2, collections=[edited])
+    syncer.remote = json.dumps(model_to_api(remote)).encode()
+    _, local_snapshot = store.patch("base-note", CollectionPatch(title="本地编辑"))
+
+    state = manager.push_now(settings.collections_path, local_snapshot, force=True)
+    pushed = json.loads(syncer.pushes[-1].decode())
+
+    assert state.status == "synced_overwrote_remote"
+    assert state.dirty is False
+    assert pushed["collections"][0]["title"] == "本地编辑"
+    assert len(syncer.backups) >= 2
+
+
+def test_sync_manager_pull_now_backs_up_dirty_local_and_replaces_file(tmp_path: Path):
+    base = DataFile(schemaVersion=1, revision=1, collections=[collection("base-note")])
+    syncer = FakeSyncer(remote=json.dumps(model_to_api(base)).encode())
+    settings = sync_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+    store.import_collections([collection("local-note")])
+
+    remote = DataFile(schemaVersion=1, revision=2, collections=[collection("base-note"), collection("remote-note")])
+    syncer.remote = json.dumps(model_to_api(remote)).encode()
+
+    state = manager.pull_now(settings.collections_path)
+    snapshot = JSONStore(settings.collections_path).snapshot()
+
+    assert state.status == "synced"
+    assert state.dirty is False
+    assert Path(state.local_backup_path).is_file()
+    assert snapshot.revision == 2
+    assert {item.id for item in snapshot.collections} == {"base-note", "remote-note"}
 
 
 def sync_settings(tmp_path: Path) -> Settings:

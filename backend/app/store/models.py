@@ -98,6 +98,7 @@ class CollectionPatch(APIModel):
     content: str | None = None
     tags: list[str] | None = None
     source_url: str | None = Field(None, alias="sourceUrl")
+    base_revision: int | None = Field(None, alias="baseRevision")
 
 
 def model_to_api(value: BaseModel) -> dict:

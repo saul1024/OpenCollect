@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api.router import create_api_router
-from backend.app.core.config import Settings
+from backend.app.core.config import Settings, SyncSettings
 from backend.app.main import create_app
 from backend.app.store.json_store import JSONStore
-from backend.app.store.models import Author, Collection, Image, Stats
+from backend.app.store.models import Author, Collection, DataFile, Image, Stats, model_to_api
+from backend.app.sync.manager import SyncManager
 from backend.app.xhs.parser import ParserError
 
 
@@ -176,6 +178,103 @@ def test_refresh_conflict_returns_409(tmp_path: Path):
     assert response.json()["error"] == "CONFLICT"
 
 
+def test_write_apis_reject_stale_base_revision(tmp_path: Path):
+    with TestClient(api_app(tmp_path, QueueParser())) as client:
+        response = client.post(
+            "/api/collections/import-local",
+            json={"collections": [api_collection("note-1").model_dump(by_alias=True)]},
+        )
+        stale_revision = response.json()["revision"]
+        client.patch("/api/collections/note-1", json={"title": "当前标题", "baseRevision": stale_revision})
+        current_revision = client.get("/api/collections").json()["revision"]
+
+        requests = [
+            lambda: client.patch("/api/collections/note-1", json={"title": "旧页面标题", "baseRevision": stale_revision}),
+            lambda: client.delete(f"/api/collections/note-1?baseRevision={stale_revision}"),
+            lambda: client.delete(f"/api/collections?baseRevision={stale_revision}"),
+            lambda: client.post(
+                "/api/collections/import-local",
+                json={"collections": [api_collection("note-2").model_dump(by_alias=True)], "baseRevision": stale_revision},
+            ),
+            lambda: client.post(
+                "/api/collect",
+                json={"input": "https://www.xiaohongshu.com/explore/note-2", "baseRevision": stale_revision},
+            ),
+            lambda: client.post(f"/api/collections/note-1/refresh", json={"baseRevision": stale_revision}),
+        ]
+
+        for request in requests:
+            response = request()
+            assert response.status_code == 409
+            assert response.json() == {
+                "error": "CONFLICT",
+                "message": "数据已在其他页面更新",
+                "currentRevision": current_revision,
+            }
+
+        payload = client.get("/api/collections").json()
+        assert payload["revision"] == current_revision
+        assert [item["id"] for item in payload["collections"]] == ["note-1"]
+        assert payload["collections"][0]["title"] == "当前标题"
+
+
+def test_sync_push_api_auto_merges_and_reloads_store(tmp_path: Path):
+    base = DataFile(schemaVersion=1, revision=1, collections=[api_collection("base-note")])
+    syncer = FakeSyncer(remote=model_bytes(base))
+    settings = sync_api_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+    app = FastAPI()
+    app.include_router(create_api_router(store, QueueParser(), DummyMediaProxy(), manager))
+
+    with TestClient(app) as client:
+        client.post("/api/collections/import-local", json={"collections": [api_collection("local-note").model_dump(by_alias=True)]})
+        remote = DataFile(
+            schemaVersion=1,
+            revision=2,
+            collections=[api_collection("base-note"), api_collection("remote-note")],
+        )
+        syncer.remote = model_bytes(remote)
+
+        response = client.post("/api/sync/push")
+
+        assert response.status_code == 200
+        assert response.json()["sync"]["status"] == "synced_auto_merged"
+        payload = client.get("/api/collections").json()
+        assert payload["revision"] == 3
+        assert {item["id"] for item in payload["collections"]} == {"base-note", "local-note", "remote-note"}
+
+
+def test_sync_pull_api_backs_up_and_reloads_store(tmp_path: Path):
+    base = DataFile(schemaVersion=1, revision=1, collections=[api_collection("base-note")])
+    syncer = FakeSyncer(remote=model_bytes(base))
+    settings = sync_api_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+    app = FastAPI()
+    app.include_router(create_api_router(store, QueueParser(), DummyMediaProxy(), manager))
+
+    with TestClient(app) as client:
+        client.post("/api/collections/import-local", json={"collections": [api_collection("local-note").model_dump(by_alias=True)]})
+        remote = DataFile(
+            schemaVersion=1,
+            revision=2,
+            collections=[api_collection("base-note"), api_collection("remote-note")],
+        )
+        syncer.remote = model_bytes(remote)
+
+        response = client.post("/api/sync/pull")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["sync"]["status"] == "synced"
+        assert Path(payload["sync"]["local_backup_path"]).is_file()
+        assert payload["revision"] == 2
+        assert {item["id"] for item in payload["collections"]} == {"base-note", "remote-note"}
+
+
 def api_app(tmp_path: Path, parser) -> FastAPI:
     app = FastAPI()
     store = JSONStore(tmp_path / "collections.json")
@@ -198,6 +297,24 @@ class QueueParser:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+class FakeSyncer:
+    def __init__(self, remote: bytes | None = None):
+        self.remote = remote
+        self.pushes: list[bytes] = []
+        self.backups: list[tuple[bytes, int]] = []
+
+    def pull(self) -> bytes | None:
+        return self.remote
+
+    def push(self, data: bytes) -> None:
+        self.pushes.append(data)
+        self.remote = data
+
+    def backup(self, data: bytes, revision: int) -> str:
+        self.backups.append((data, revision))
+        return f"opencollect/backups/rev-{revision}.json"
 
 
 def parsed_result(collection: Collection) -> dict:
@@ -224,4 +341,24 @@ def api_collection(collection_id: str, title: str | None = None, content: str = 
         images=[Image(url=f"https://sns-webpic-qc.xhscdn.com/{collection_id}.jpg")],
         tags=["平台标签"],
         stats=Stats(likes=likes),
+    )
+
+
+def model_bytes(data: DataFile) -> bytes:
+    return json.dumps(model_to_api(data), ensure_ascii=False).encode("utf-8")
+
+
+def sync_api_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        port="0",
+        data_dir=tmp_path / "data",
+        public_dir=tmp_path / "public",
+        sync=SyncSettings(
+            provider="cos",
+            endpoint="https://cos.ap-guangzhou.myqcloud.com",
+            region="ap-guangzhou",
+            bucket="opencollect-1250000000",
+            access_key_id="secret-id",
+            secret_access_key="secret-key",
+        ),
     )

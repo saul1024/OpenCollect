@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.app.store.json_store import JSONStore
+import pytest
+
+from backend.app.store.json_store import JSONStore, RevisionConflict
 from backend.app.store.models import Author, Collection, CollectionPatch, Image, Stats
 
 
@@ -121,6 +123,35 @@ def test_record_fetch_failure_keeps_existing_collection(tmp_path: Path):
     assert saved.fetch.last_status == "failed"
     assert saved.fetch.last_error_reason == "PLATFORM_BLOCKED"
     assert saved.fetch.last_error_message == "小红书限制了本次访问"
+
+
+def test_json_store_rejects_stale_base_revision_for_writes(tmp_path: Path):
+    store = JSONStore(tmp_path / "collections.json")
+    _, _, snapshot = store.import_collections([collection("note-1")])
+    stale_revision = snapshot.revision
+    store.patch("note-1", CollectionPatch(title="当前标题"), base_revision=stale_revision)
+    current_revision = store.snapshot().revision
+
+    write_attempts = [
+        lambda: store.assert_base_revision(stale_revision),
+        lambda: store.add_front(collection("note-2"), base_revision=stale_revision),
+        lambda: store.import_collections([collection("note-2")], base_revision=stale_revision),
+        lambda: store.patch("note-1", CollectionPatch(title="旧页面标题"), base_revision=stale_revision),
+        lambda: store.delete("note-1", base_revision=stale_revision),
+        lambda: store.clear(base_revision=stale_revision),
+        lambda: store.refresh("note-1", collection("note-1"), base_revision=stale_revision),
+        lambda: store.record_fetch_failure("note-1", "NETWORK_FAILED", "网络异常", base_revision=stale_revision),
+    ]
+
+    for attempt in write_attempts:
+        with pytest.raises(RevisionConflict) as exc_info:
+            attempt()
+        assert exc_info.value.current_revision == current_revision
+
+    snapshot = store.snapshot()
+    assert snapshot.revision == current_revision
+    assert [item.id for item in snapshot.collections] == ["note-1"]
+    assert snapshot.collections[0].title == "当前标题"
 
 
 def collection(collection_id: str) -> Collection:

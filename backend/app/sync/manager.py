@@ -13,8 +13,8 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from backend.app.core.config import Settings, SyncSettings
-from backend.app.store.json_store import SCHEMA_VERSION, write_json_atomic
-from backend.app.store.models import DataFile
+from backend.app.store.json_store import SCHEMA_VERSION, canonical_source_url, normalize_collection, write_json_atomic
+from backend.app.store.models import Collection, DataFile, model_to_api
 from backend.app.sync.s3_client import S3Client, S3Config, S3Error
 
 
@@ -104,6 +104,11 @@ class SyncState:
     last_pushed_revision: int = 0
     pending_revision: int = 0
     last_backup_key: str = ""
+    base_remote_revision: int = 0
+    remote_revision: int = 0
+    local_revision: int = 0
+    conflict_type: str = ""
+    local_backup_path: str = ""
     updated_at: str = ""
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -113,6 +118,8 @@ class SyncManager:
         self.settings = settings
         self.sync_settings = settings.sync
         self.state_path = settings.sync_state_path
+        self.base_path = settings.sync_base_path
+        self.local_backup_dir = settings.sync_local_backup_dir
         self._lock = threading.RLock()
         self._syncer = syncer if syncer is not None else create_syncer(self.sync_settings)
         self._state = self._load_state()
@@ -135,7 +142,14 @@ class SyncManager:
 
         now = now_utc()
         if remote_bytes is None:
-            self._update_state(status="remote_missing", last_pull_at=now, last_error="", last_error_at="")
+            self._write_base_data(empty_data_file())
+            self._update_state(
+                status="remote_missing",
+                last_pull_at=now,
+                last_error="",
+                last_error_at="",
+                base_remote_revision=0,
+            )
             return
 
         try:
@@ -147,6 +161,7 @@ class SyncManager:
 
         local_data = self._read_local_data_file(collections_path)
         if local_data is not None and local_data.revision > remote_data.revision:
+            self._write_base_data(remote_data)
             self._update_state(
                 status="local_newer",
                 dirty=True,
@@ -157,11 +172,15 @@ class SyncManager:
                 last_local_change_at=local_data.updated_at or now,
                 last_error="",
                 last_error_at="",
+                base_remote_revision=remote_data.revision,
+                remote_revision=remote_data.revision,
+                local_revision=local_data.revision,
             )
             return
 
         try:
             write_json_atomic(collections_path, remote_data)
+            self._write_base_data(remote_data)
         except Exception as exc:
             self._record_error("pull_write_failed", exc)
             logger.warning("cloud sync could not write pulled data: %s", exc)
@@ -174,8 +193,12 @@ class SyncManager:
             last_success_at=now,
             last_pushed_revision=remote_data.revision,
             pending_revision=0,
+            base_remote_revision=remote_data.revision,
+            remote_revision=remote_data.revision,
+            local_revision=remote_data.revision,
             last_error="",
             last_error_at="",
+            conflict_type="",
         )
 
     def initialize_local_snapshot(self, snapshot: DataFile) -> None:
@@ -210,9 +233,11 @@ class SyncManager:
             last_local_change_at=snapshot.updated_at or now_utc(),
             last_error="",
             last_error_at="",
+            local_revision=snapshot.revision,
+            conflict_type="",
         )
 
-    def push_now(self, collections_path: Path, snapshot: DataFile) -> SyncState:
+    def push_now(self, collections_path: Path, snapshot: DataFile, force: bool = False) -> SyncState:
         if not self.enabled:
             return self.status()
 
@@ -224,26 +249,58 @@ class SyncManager:
             return self.status()
 
         try:
+            local_data = parse_data_file(collections_path.read_bytes())
+            base_data = self._read_base_data() or empty_data_file(state.base_remote_revision or state.last_pushed_revision)
+            remote_bytes = self._syncer.pull()
+            remote_data = parse_data_file(remote_bytes) if remote_bytes is not None else None
+            remote_revision = remote_data.revision if remote_data is not None else 0
+            base_revision = base_data.revision
+
+            if remote_revision != base_revision and not force:
+                if remote_data is not None:
+                    merged = merge_only_additions(base_data, local_data, remote_data)
+                    if merged is not None:
+                        write_json_atomic(collections_path, merged)
+                        local_data = merged
+                    else:
+                        self._record_remote_conflict(local_data, remote_data, base_revision, "manual_required")
+                        return self.status()
+                else:
+                    self._record_remote_conflict(local_data, None, base_revision, "manual_required")
+                    return self.status()
+
             data = collections_path.read_bytes()
             backup_key = ""
             backup_error = ""
+            if force and remote_data is not None and remote_revision != base_revision:
+                try:
+                    backup_key = self._syncer.backup(model_to_bytes(remote_data), remote_data.revision)
+                except Exception as exc:
+                    backup_error = str(exc)
+                    logger.warning("cloud sync remote backup failed before overwrite: %s", exc)
             try:
-                backup_key = self._syncer.backup(data, snapshot.revision)
+                local_backup_key = self._syncer.backup(data, local_data.revision)
+                backup_key = local_backup_key or backup_key
             except Exception as exc:
                 backup_error = str(exc)
                 logger.warning("cloud sync backup failed: %s", exc)
 
             self._syncer.push(data)
+            self._write_base_data(local_data)
             now = now_utc()
             state_update = {
-                "status": "synced_with_backup_error" if backup_error else "synced",
+                "status": merged_status(force, remote_revision != base_revision, backup_error),
                 "dirty": False,
                 "last_push_at": now,
                 "last_success_at": now,
-                "last_pushed_revision": snapshot.revision,
+                "last_pushed_revision": local_data.revision,
                 "pending_revision": 0,
                 "last_error": backup_error,
                 "last_error_at": now if backup_error else "",
+                "base_remote_revision": local_data.revision,
+                "remote_revision": local_data.revision,
+                "local_revision": local_data.revision,
+                "conflict_type": "",
             }
             if backup_key:
                 state_update.update({"last_backup_at": now, "last_backup_key": backup_key})
@@ -255,6 +312,42 @@ class SyncManager:
 
     def retry_push(self, collections_path: Path, snapshot: DataFile) -> SyncState:
         return self.push_now(collections_path, snapshot)
+
+    def pull_now(self, collections_path: Path) -> SyncState:
+        if not self.enabled:
+            return self.status()
+
+        try:
+            remote_bytes = self._syncer.pull()
+            if remote_bytes is None:
+                raise S3Error("云端数据不存在")
+            remote_data = parse_data_file(remote_bytes)
+            local_backup_path = ""
+            local_data = self._read_local_data_file(collections_path)
+            if local_data is not None:
+                local_backup_path = self._backup_local_file(local_data)
+            write_json_atomic(collections_path, remote_data)
+            self._write_base_data(remote_data)
+            now = now_utc()
+            self._update_state(
+                status="synced",
+                dirty=False,
+                last_pull_at=now,
+                last_success_at=now,
+                last_pushed_revision=remote_data.revision,
+                pending_revision=0,
+                base_remote_revision=remote_data.revision,
+                remote_revision=remote_data.revision,
+                local_revision=remote_data.revision,
+                conflict_type="",
+                local_backup_path=local_backup_path,
+                last_error="",
+                last_error_at="",
+            )
+        except Exception as exc:
+            self._record_error("pull_failed", exc, pending_revision=self.status().pending_revision, dirty=self.status().dirty)
+            logger.warning("cloud sync pull failed: %s", exc)
+        return self.status()
 
     def status(self) -> SyncState:
         with self._lock:
@@ -314,6 +407,39 @@ class SyncManager:
             logger.warning("local collections json is invalid during sync bootstrap: %s", exc)
             return None
 
+    def _read_base_data(self) -> DataFile | None:
+        if not self.base_path.exists():
+            return None
+        try:
+            return parse_data_file(self.base_path.read_bytes())
+        except Exception as exc:
+            logger.warning("sync base json is invalid: %s", exc)
+            return None
+
+    def _write_base_data(self, data: DataFile) -> None:
+        write_json_atomic(self.base_path, data)
+
+    def _backup_local_file(self, data: DataFile) -> str:
+        self.local_backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = self.local_backup_dir / f"collections-local-{timestamp}-rev{data.revision}.json"
+        write_json_atomic(backup_path, data)
+        return str(backup_path)
+
+    def _record_remote_conflict(self, local_data: DataFile, remote_data: DataFile | None, base_revision: int, conflict_type: str) -> None:
+        remote_revision = remote_data.revision if remote_data is not None else 0
+        self._update_state(
+            status="remote_conflict",
+            dirty=True,
+            pending_revision=local_data.revision,
+            last_error="云端已有新版本",
+            last_error_at=now_utc(),
+            base_remote_revision=base_revision,
+            remote_revision=remote_revision,
+            local_revision=local_data.revision,
+            conflict_type=conflict_type,
+        )
+
     def _update_state(self, **changes) -> None:
         with self._lock:
             data = asdict(self._state)
@@ -357,6 +483,99 @@ def parse_data_file(data: bytes) -> DataFile:
     if parsed.schema_version != SCHEMA_VERSION:
         raise S3Error(f"unsupported schema version: {parsed.schema_version}")
     return parsed
+
+
+def model_to_bytes(data: DataFile) -> bytes:
+    return (json.dumps(model_to_api(data), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def empty_data_file(revision: int = 0) -> DataFile:
+    return DataFile(schemaVersion=SCHEMA_VERSION, revision=revision, updatedAt="", collections=[])
+
+
+def merge_only_additions(base: DataFile, local: DataFile, remote: DataFile) -> DataFile | None:
+    base_map = collection_map(base.collections)
+    local_map = collection_map(local.collections)
+    remote_map = collection_map(remote.collections)
+    if len(base_map) != len(base.collections) or len(local_map) != len(local.collections) or len(remote_map) != len(remote.collections):
+        return None
+
+    for key, base_collection in base_map.items():
+        local_collection = local_map.get(key)
+        remote_collection = remote_map.get(key)
+        if local_collection is None or remote_collection is None:
+            return None
+        if not same_collection_payload(local_collection, base_collection):
+            return None
+        if not same_collection_payload(remote_collection, base_collection):
+            return None
+
+    local_new_keys = set(local_map) - set(base_map)
+    remote_new_keys = set(remote_map) - set(base_map)
+    for key in local_new_keys & remote_new_keys:
+        if not same_collection_payload(local_map[key], remote_map[key]):
+            return None
+
+    merged_collections = [Collection.model_validate(model_to_api(collection)) for collection in local.collections]
+    local_keys = set(local_map)
+    for collection in remote.collections:
+        key = collection_key(collection)
+        if key not in local_keys:
+            merged_collections.append(Collection.model_validate(model_to_api(collection)))
+
+    return DataFile(
+        schemaVersion=SCHEMA_VERSION,
+        revision=max(local.revision, remote.revision) + 1,
+        updatedAt=now_utc(),
+        collections=merged_collections,
+    )
+
+
+def collection_map(collections: list[Collection]) -> dict[str, Collection]:
+    result: dict[str, Collection] = {}
+    for collection in collections:
+        key = collection_key(collection)
+        if not key or key in result:
+            return {}
+        result[key] = collection
+    return result
+
+
+def collection_key(collection: Collection) -> str:
+    platform = collection.platform or "unknown"
+    if collection.source_id:
+        return f"{platform}:source:{collection.source_id}"
+    if collection.canonical_url:
+        return f"{platform}:url:{collection.canonical_url}"
+    if collection.source_url:
+        return f"{platform}:url:{collection.source_url}"
+    if collection.id:
+        return f"{platform}:id:{collection.id}"
+    return ""
+
+
+def same_collection_payload(left: Collection, right: Collection) -> bool:
+    return comparable_collection_payload(left) == comparable_collection_payload(right)
+
+
+def comparable_collection_payload(collection: Collection) -> dict:
+    normalized = normalize_collection(Collection.model_validate(model_to_api(collection)), "")
+    payload = model_to_api(normalized)
+    source_url = payload.get("sourceUrl") or ""
+    platform = payload.get("platform") or ""
+    payload["canonicalUrl"] = canonical_source_url(payload.get("canonicalUrl") or source_url, platform)
+    payload.pop("updatedAt", None)
+    return payload
+
+
+def merged_status(force: bool, remote_changed: bool, backup_error: str) -> str:
+    if backup_error:
+        return "synced_with_backup_error"
+    if force and remote_changed:
+        return "synced_overwrote_remote"
+    if remote_changed:
+        return "synced_auto_merged"
+    return "synced"
 
 
 def write_json_dict_atomic(path: Path, data: dict) -> None:

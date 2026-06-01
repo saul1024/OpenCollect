@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.app.media.proxy import MediaProxy, MediaProxyError
-from backend.app.store.json_store import CollectionConflict, CollectionNotFound, JSONStore, StoreError
+from backend.app.store.json_store import CollectionConflict, CollectionNotFound, JSONStore, RevisionConflict, StoreError
 from backend.app.store.models import Collection, CollectionPatch, DataFile, model_to_api
 from backend.app.sync import SyncManager
 from backend.app.xhs.parser import ParserError, XHSParser
@@ -13,10 +13,20 @@ from backend.app.xhs.parser import ParserError, XHSParser
 
 class CollectRequest(BaseModel):
     input: str = ""
+    base_revision: int | None = Field(None, alias="baseRevision")
 
 
 class ImportLocalRequest(BaseModel):
     collections: list[Collection] = []
+    base_revision: int | None = Field(None, alias="baseRevision")
+
+
+class RevisionRequest(BaseModel):
+    base_revision: int | None = Field(None, alias="baseRevision")
+
+
+class SyncPushRequest(BaseModel):
+    force: bool = False
 
 
 def create_api_router(
@@ -42,7 +52,7 @@ def create_api_router(
     @router.post("/collections/import-local")
     async def import_local_collections(request: ImportLocalRequest):
         try:
-            imported, updated, snapshot = store.import_collections(request.collections)
+            imported, updated, snapshot = store.import_collections(request.collections, base_revision=request.base_revision)
         except StoreError as exc:
             return store_error_response(exc)
         return {
@@ -54,7 +64,7 @@ def create_api_router(
     @router.patch("/collections/{collection_id}")
     async def patch_collection(collection_id: str, patch: CollectionPatch):
         try:
-            collection, snapshot = store.patch(collection_id, patch)
+            collection, snapshot = store.patch(collection_id, patch, base_revision=patch.base_revision)
         except StoreError as exc:
             return store_error_response(exc)
         return {
@@ -64,9 +74,9 @@ def create_api_router(
         }
 
     @router.delete("/collections/{collection_id}")
-    async def delete_collection(collection_id: str):
+    async def delete_collection(collection_id: str, baseRevision: int | None = None):
         try:
-            deleted, snapshot = store.delete(collection_id)
+            deleted, snapshot = store.delete(collection_id, base_revision=baseRevision)
         except StoreError as exc:
             return store_error_response(exc)
         return {
@@ -75,9 +85,9 @@ def create_api_router(
         }
 
     @router.delete("/collections")
-    async def clear_collections():
+    async def clear_collections(baseRevision: int | None = None):
         try:
-            previous, snapshot = store.clear()
+            previous, snapshot = store.clear(base_revision=baseRevision)
         except StoreError as exc:
             return store_error_response(exc)
         return {
@@ -91,8 +101,12 @@ def create_api_router(
         if not input_text:
             return error_response(400, "EMPTY_INPUT", "请粘贴小红书分享文本或链接")
         try:
+            store.assert_base_revision(request.base_revision)
+        except StoreError as exc:
+            return store_error_response(exc)
+        try:
             result = await parser.collect(input_text)
-            save_result = store.add_front(result["note"])
+            save_result = store.add_front(result["note"], base_revision=request.base_revision)
         except ParserError as exc:
             return parser_error_response(exc)
         except StoreError as exc:
@@ -105,7 +119,11 @@ def create_api_router(
         return result
 
     @router.post("/collections/{collection_id}/refresh")
-    async def refresh_collection(collection_id: str):
+    async def refresh_collection(collection_id: str, request: RevisionRequest = RevisionRequest()):
+        try:
+            store.assert_base_revision(request.base_revision)
+        except StoreError as exc:
+            return store_error_response(exc)
         existing = store.get(collection_id)
         if existing is None:
             return error_response(404, "NOT_FOUND", "收藏不存在")
@@ -114,10 +132,10 @@ def create_api_router(
             return error_response(422, "REFRESH_FAILED", "收藏缺少原文链接", reason="INVALID_LINK")
         try:
             result = await parser.collect(source_url)
-            refreshed, snapshot = store.refresh(collection_id, result["note"])
+            refreshed, snapshot = store.refresh(collection_id, result["note"], base_revision=request.base_revision)
         except ParserError as exc:
             try:
-                failed, snapshot = store.record_fetch_failure(collection_id, exc.reason, exc.message)
+                failed, snapshot = store.record_fetch_failure(collection_id, exc.reason, exc.message, base_revision=request.base_revision)
             except StoreError as store_exc:
                 return store_error_response(store_exc)
             return {
@@ -161,15 +179,29 @@ def create_api_router(
 
     @router.post("/sync/retry")
     async def sync_retry():
-        return await sync_push()
+        return await sync_push(SyncPushRequest())
 
     @router.post("/sync/push")
-    async def sync_push():
+    async def sync_push(request: SyncPushRequest = SyncPushRequest()):
         if sync_manager is None or not sync_manager.enabled:
             return {"provider": "none", "enabled": False, "status": "disabled"}
         snapshot = store.snapshot()
-        sync_manager.push_now(store.path, snapshot)
+        sync_manager.push_now(store.path, snapshot, force=request.force)
+        if sync_manager.status().status in {"synced_auto_merged", "synced_overwrote_remote", "synced"}:
+            store.reload_from_disk()
         return {"sync": sync_manager.status_payload()}
+
+    @router.post("/sync/pull")
+    async def sync_pull():
+        if sync_manager is None or not sync_manager.enabled:
+            return {"provider": "none", "enabled": False, "status": "disabled"}
+        sync_manager.pull_now(store.path)
+        if sync_manager.status().status == "synced":
+            store.reload_from_disk()
+        return {
+            "sync": sync_manager.status_payload(),
+            **snapshot_payload(store.snapshot()),
+        }
 
     @router.get("/image")
     async def image(url: str = ""):
@@ -209,4 +241,6 @@ def store_error_response(exc: StoreError) -> JSONResponse:
         return error_response(404, "NOT_FOUND", "收藏不存在")
     if isinstance(exc, CollectionConflict):
         return error_response(409, "CONFLICT", "刷新结果与已有收藏重复")
+    if isinstance(exc, RevisionConflict):
+        return error_response(409, "CONFLICT", "数据已在其他页面更新", currentRevision=exc.current_revision)
     return error_response(500, "STORE_ERROR", str(exc))
