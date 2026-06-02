@@ -208,6 +208,38 @@ export function getNoteType(note) {
   return note?.type === "video" || Boolean(note?.video?.url) ? "video" : "normal";
 }
 
+export function getMediaAspectRatio(note) {
+  const dimensions = getPrimaryMediaDimensions(note);
+  if (!dimensions) return 0.75;
+  return clampRatio(dimensions.width / dimensions.height);
+}
+
+function getPrimaryMediaDimensions(note) {
+  const videoWidth = Number(note?.video?.width || 0);
+  const videoHeight = Number(note?.video?.height || 0);
+  if (getNoteType(note) === "video" && videoWidth > 0 && videoHeight > 0) {
+    return { width: videoWidth, height: videoHeight };
+  }
+
+  const image = Array.isArray(note?.images) ? note.images[0] : null;
+  const imageWidth = Number(image?.width || 0);
+  const imageHeight = Number(image?.height || 0);
+  if (imageWidth > 0 && imageHeight > 0) {
+    return { width: imageWidth, height: imageHeight };
+  }
+
+  if (videoWidth > 0 && videoHeight > 0) {
+    return { width: videoWidth, height: videoHeight };
+  }
+
+  return null;
+}
+
+function clampRatio(value) {
+  if (!Number.isFinite(value) || value <= 0) return 0.75;
+  return Math.min(1.35, Math.max(0.72, value));
+}
+
 function tokenizeQuery(query) {
   return normalizeSearchText(query)
     .split(/\s+/)

@@ -4,6 +4,7 @@ import {
   createViewState,
   getAvailableTags,
   getCollectionView,
+  getMediaAspectRatio,
   parseTags,
   sortNotes
 } from "../public/view-model.js";
@@ -77,6 +78,11 @@ assert.deepEqual(getAvailableTags(notes), ["美食", "数码", "甜品", "做法
 
 assert.deepEqual(sortNotes(notes, "collected-asc").map((item) => item.id), ["dessert-1", "food-1", "video-1"]);
 assert.deepEqual(sortNotes(notes, "source-desc").map((item) => item.id), ["food-1", "video-1", "dessert-1"]);
+
+assert.equal(getMediaAspectRatio(note({ images: [{ width: 1200, height: 1600 }] })), 0.75);
+assert.equal(getMediaAspectRatio(note({ type: "video", video: { width: 720, height: 1280 } })), 0.72);
+assert.equal(getMediaAspectRatio(note({ images: [{ width: 3000, height: 1000 }] })), 1.35);
+assert.equal(getMediaAspectRatio(note({ images: [] })), 0.75);
 
 {
   const view = getCollectionView(notes, createViewState({ query: "不存在" }));

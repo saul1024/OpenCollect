@@ -4,6 +4,7 @@ import {
   TYPE_OPTIONS,
   createViewState,
   getCollectionView,
+  getMediaAspectRatio,
   getPlatformMeta,
   parseTags
 } from "./view-model.js";
@@ -53,6 +54,7 @@ let syncState = null;
 let isSyncing = false;
 let currentRevision = 0;
 let viewState = createViewState();
+let openCardMenuId = "";
 const refreshingIds = new Set();
 const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("opencollect-sync") : null;
@@ -141,6 +143,13 @@ noteModal.addEventListener("click", (event) => {
 
 document.addEventListener("error", handleImageError, true);
 document.addEventListener("error", handleVideoError, true);
+
+document.addEventListener("click", (event) => {
+  if (!openCardMenuId) return;
+  if (event.target instanceof Element && event.target.closest(".card-menu")) return;
+  openCardMenuId = "";
+  renderList();
+});
 
 window.addEventListener("resize", () => {
   window.clearTimeout(resizeTimer);
@@ -492,7 +501,7 @@ function renderList(view = getCollectionView(notes, viewState)) {
   const columns = Array.from({ length: renderedColumnCount }, () => []);
 
   view.items.forEach((note, index) => {
-    columns[index % renderedColumnCount].push(renderCollectionCard(note, index));
+    columns[index % renderedColumnCount].push(renderCollectionCard(note));
   });
 
   list.innerHTML = columns
@@ -501,6 +510,7 @@ function renderList(view = getCollectionView(notes, viewState)) {
 
   list.querySelectorAll('[data-action="open-note"]').forEach((button) => {
     button.addEventListener("click", () => {
+      openCardMenuId = "";
       activeId = button.dataset.id;
       render();
       noteView.focus({ preventScroll: true });
@@ -508,23 +518,46 @@ function renderList(view = getCollectionView(notes, viewState)) {
   });
 
   list.querySelectorAll('[data-action="edit-note"]').forEach((button) => {
-    button.addEventListener("click", () => openEditor(button.dataset.id));
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      openCardMenuId = "";
+      renderList();
+      openEditor(id);
+    });
   });
 
   list.querySelectorAll('[data-action="delete-note"]').forEach((button) => {
-    button.addEventListener("click", () => deleteNote(button.dataset.id));
+    button.addEventListener("click", () => {
+      openCardMenuId = "";
+      deleteNote(button.dataset.id);
+    });
   });
 
   list.querySelectorAll('[data-action="refresh-note"]').forEach((button) => {
-    button.addEventListener("click", () => refreshNote(button.dataset.id));
+    button.addEventListener("click", () => {
+      openCardMenuId = "";
+      refreshNote(button.dataset.id);
+    });
   });
 
   list.querySelectorAll('[data-action="filter-tag"]').forEach((button) => {
-    button.addEventListener("click", () => applyTagFilter(button.dataset.tag || ""));
+    button.addEventListener("click", () => {
+      openCardMenuId = "";
+      applyTagFilter(button.dataset.tag || "");
+    });
+  });
+
+  list.querySelectorAll('[data-action="toggle-card-menu"]').forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const id = button.dataset.id || "";
+      openCardMenuId = openCardMenuId === id ? "" : id;
+      renderList();
+    });
   });
 }
 
-function renderCollectionCard(note, index) {
+function renderCollectionCard(note) {
   const coverUrls = getImageProxyUrls(note.images);
   const cover = coverUrls[0] || "";
   const avatar = note.author?.avatar ? imageProxy(note.author.avatar) : "";
@@ -533,10 +566,11 @@ function renderCollectionCard(note, index) {
   const isVideo = Boolean(note.video?.url);
   const title = note.title || note.content || "无标题笔记";
   const platform = getPlatformMeta(note);
-  const ratioClass = getCardRatioClass(index);
+  const mediaRatio = getMediaAspectRatio(note).toFixed(3);
+  const isMenuOpen = openCardMenuId === note.id;
 
   return `
-    <article class="collection-item${isActive}${isVideo ? " video-card" : ""}${ratioClass ? ` ${ratioClass}` : ""}" data-id="${escapeAttr(note.id)}">
+    <article class="collection-item${isActive}${isVideo ? " video-card" : ""}" data-id="${escapeAttr(note.id)}" style="--media-ratio: ${escapeAttr(mediaRatio)};">
       <button type="button" class="card-open" data-action="open-note" data-id="${escapeAttr(note.id)}">
         <span class="card-media">
           ${cover ? `<img src="${escapeAttr(cover)}" alt="" loading="lazy"${renderImageFallbackAttrs(coverUrls.slice(1))} />` : `<span class="thumb-fallback"></span>`}
@@ -555,11 +589,7 @@ function renderCollectionCard(note, index) {
         </span>
       </button>
       ${renderCardTags(note)}
-      <span class="card-tools" aria-label="收藏操作">
-        <button type="button" data-action="refresh-note" data-id="${escapeAttr(note.id)}" ${refreshingIds.has(note.id) ? "disabled" : ""}>${refreshingIds.has(note.id) ? "刷新中" : "刷新"}</button>
-        <button type="button" data-action="edit-note" data-id="${escapeAttr(note.id)}">编辑</button>
-        <button type="button" class="danger" data-action="delete-note" data-id="${escapeAttr(note.id)}">删除</button>
-      </span>
+      ${renderCardMenu(note, isMenuOpen)}
     </article>
   `;
 }
@@ -574,18 +604,32 @@ function renderCardTags(note) {
   `;
 }
 
+function renderCardMenu(note, isOpen) {
+  return `
+    <span class="card-menu${isOpen ? " open" : ""}" aria-label="收藏操作">
+      <button
+        type="button"
+        class="card-menu-toggle"
+        data-action="toggle-card-menu"
+        data-id="${escapeAttr(note.id)}"
+        aria-label="打开收藏操作"
+        aria-expanded="${isOpen ? "true" : "false"}"
+      >...</button>
+      <span class="card-menu-popover" ${isOpen ? "" : "hidden"}>
+        <button type="button" data-action="refresh-note" data-id="${escapeAttr(note.id)}" ${refreshingIds.has(note.id) ? "disabled" : ""}>${refreshingIds.has(note.id) ? "刷新中" : "重新抓取"}</button>
+        <button type="button" data-action="edit-note" data-id="${escapeAttr(note.id)}">编辑</button>
+        <button type="button" class="danger" data-action="delete-note" data-id="${escapeAttr(note.id)}">删除</button>
+      </span>
+    </span>
+  `;
+}
+
 function getMasonryColumnCount() {
   const width = list.getBoundingClientRect().width || document.documentElement.clientWidth || window.innerWidth;
   const minCardWidth = width <= 560 ? 158 : width <= 920 ? 180 : 230;
   const gap = width <= 560 ? 12 : 18;
   const count = Math.floor((width + gap) / (minCardWidth + gap));
   return Math.max(1, Math.min(7, count || 1));
-}
-
-function getCardRatioClass(index) {
-  if (index % 4 === 1) return "ratio-medium";
-  if (index % 4 === 2) return "ratio-square";
-  return "";
 }
 
 function renderActiveNote() {
