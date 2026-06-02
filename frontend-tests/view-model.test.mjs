@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 
 import {
   createViewState,
+  createBatchImportPlan,
+  extractUrls,
   getAvailableTags,
   getCollectionView,
   getMediaAspectRatio,
@@ -83,6 +85,27 @@ assert.equal(getMediaAspectRatio(note({ images: [{ width: 1200, height: 1600 }] 
 assert.equal(getMediaAspectRatio(note({ type: "video", video: { width: 720, height: 1280 } })), 0.72);
 assert.equal(getMediaAspectRatio(note({ images: [{ width: 3000, height: 1000 }] })), 1.35);
 assert.equal(getMediaAspectRatio(note({ images: [] })), 0.75);
+
+assert.deepEqual(
+  extractUrls(`复制打开 https://xhslink.com/a， 也可以换行
+https://www.xiaohongshu.com/explore/note-2?xsec_token=abc. 普通文案 https://xhslink.com/c！`),
+  ["https://xhslink.com/a", "https://www.xiaohongshu.com/explore/note-2?xsec_token=abc", "https://xhslink.com/c"]
+);
+
+{
+  const plan = createBatchImportPlan("https://xhslink.com/a https://xhslink.com/a https://xhslink.com/b", { limit: 20 });
+  assert.equal(plan.totalExtracted, 3);
+  assert.equal(plan.total, 3);
+  assert.equal(plan.queued, 2);
+  assert.deepEqual(plan.results.map((item) => item.status), ["pending", "duplicate-input", "pending"]);
+}
+
+{
+  const plan = createBatchImportPlan(Array.from({ length: 22 }, (_, index) => `https://xhslink.com/${index}`).join("\n"), { limit: 20 });
+  assert.equal(plan.totalExtracted, 22);
+  assert.equal(plan.total, 20);
+  assert.equal(plan.overflow, 2);
+}
 
 {
   const view = getCollectionView(notes, createViewState({ query: "不存在" }));

@@ -9,6 +9,7 @@ from backend.app.store.models import Image
 from backend.app.xhs.parser import (
     ParserError,
     extract_initial_state,
+    extract_urls,
     looks_platform_blocked,
     normalize_asset_url,
     normalize_video,
@@ -131,6 +132,20 @@ def test_extract_initial_state_error_has_schema_reason():
 def test_generic_verify_text_is_not_platform_blocked():
     assert looks_platform_blocked("<script>const verify = true;</script>") is False
     assert looks_platform_blocked("<html>安全验证</html>") is True
+
+
+def test_extract_urls_accepts_mixed_batch_input():
+    text = """
+    复制打开小红书 https://xhslink.com/a1，
+    第二条 https://www.xiaohongshu.com/explore/note-2?xsec_token=abc.
+    也可以空格分隔 https://xhslink.com/a3! 普通文案不影响
+    """
+
+    assert extract_urls(text) == [
+        "https://xhslink.com/a1",
+        "https://www.xiaohongshu.com/explore/note-2?xsec_token=abc",
+        "https://xhslink.com/a3",
+    ]
 
 
 def test_normalize_xhs_video_url_uses_clean_playback_host():

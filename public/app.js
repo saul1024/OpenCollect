@@ -2,6 +2,7 @@ import {
   ALL_VALUE,
   SORT_OPTIONS,
   TYPE_OPTIONS,
+  createBatchImportPlan,
   createViewState,
   getCollectionView,
   getMediaAspectRatio,
@@ -39,11 +40,18 @@ const typeFilter = document.querySelector("#typeFilter");
 const tagFilter = document.querySelector("#tagFilter");
 const sortSelect = document.querySelector("#sortSelect");
 const clearViewButton = document.querySelector("#clearViewButton");
+const batchImportPanel = document.querySelector("#batchImportPanel");
+const batchImportSummary = document.querySelector("#batchImportSummary");
+const batchImportSafety = document.querySelector("#batchImportSafety");
+const batchImportProgress = document.querySelector("#batchImportProgress");
+const batchImportResults = document.querySelector("#batchImportResults");
 
 const STORE_KEY = "opencollect:xhs:poc";
 const MIGRATION_KEY = "opencollect:xhs:poc:migrated:v1";
 const XHS_IMAGE_STYLE_SUFFIX = "!nd_dft_wlteh_webp_3";
 const XHS_VIDEO_PLAYBACK_HOSTS = ["sns-video-bd.xhscdn.com", "sns-video-hw.xhscdn.com"];
+const BATCH_IMPORT_LIMIT = 20;
+const DEFAULT_BATCH_IMPORT_DELAY_MS = 2000;
 let notes = [];
 let activeId = "";
 let editingId = "";
@@ -52,6 +60,7 @@ let renderedColumnCount = 0;
 let resizeTimer = 0;
 let syncState = null;
 let isSyncing = false;
+let batchImport = null;
 let currentRevision = 0;
 let viewState = createViewState();
 let openCardMenuId = "";
@@ -66,6 +75,11 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const value = input.value.trim();
   if (!value) return;
+  const plan = createBatchImportPlan(value, { limit: BATCH_IMPORT_LIMIT });
+  if (plan.totalExtracted > 1) {
+    await collectBatch(value, plan);
+    return;
+  }
   await collect(value);
 });
 
@@ -220,16 +234,7 @@ async function collect(value) {
   setBusy(submit, true, "解析中");
 
   try {
-    const payload = await requestJson("/api/collect", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ input: value, baseRevision: currentRevision })
-    });
-    updateRevisionFromPayload(payload);
-
-    upsertNote(payload.note);
+    const payload = await submitCollect(value);
     if (payload.duplicated) {
       activeId = payload.existingId || payload.note?.id || "";
       viewState = createViewState();
@@ -251,6 +256,144 @@ async function collect(value) {
   } finally {
     setBusy(submit, false, "收藏");
   }
+}
+
+async function submitCollect(value) {
+  const payload = await requestJson("/api/collect", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ input: value, baseRevision: currentRevision })
+  });
+  updateRevisionFromPayload(payload);
+  upsertNote(payload.note);
+  return payload;
+}
+
+async function collectBatch(value, plan = createBatchImportPlan(value, { limit: BATCH_IMPORT_LIMIT })) {
+  const submit = form.querySelector("button[type='submit']");
+  const duplicateInputCount = plan.results.filter((item) => item.status === "duplicate-input").length;
+  batchImport = {
+    active: true,
+    paused: false,
+    total: plan.total,
+    totalExtracted: plan.totalExtracted,
+    overflow: plan.overflow,
+    completed: duplicateInputCount,
+    success: 0,
+    failed: 0,
+    duplicated: duplicateInputCount,
+    results: plan.results.map((item) => ({ ...item }))
+  };
+  renderBatchImport();
+
+  if (!plan.total) {
+    showToast("没有识别到链接，请粘贴rednote分享文本或 URL");
+    return;
+  }
+
+  setBusy(submit, true, "导入中");
+  sampleButton.disabled = true;
+  videoSampleButton.disabled = true;
+
+  let consecutiveNetworkFailures = 0;
+  let changed = false;
+  try {
+    for (const result of batchImport.results) {
+      if (result.status !== "pending") continue;
+
+      result.status = "running";
+      result.message = "解析中";
+      renderBatchImport();
+
+      try {
+        const payload = await submitCollect(result.url);
+        result.noteId = payload.note?.id || "";
+        result.title = payload.note?.title || "";
+        if (payload.duplicated) {
+          result.status = "duplicate";
+          result.existingId = payload.existingId || payload.note?.id || "";
+          result.message = "已收藏过";
+          batchImport.duplicated += 1;
+        } else {
+          result.status = "success";
+          result.message = "已收藏";
+          batchImport.success += 1;
+          changed = true;
+        }
+        batchImport.completed += 1;
+        consecutiveNetworkFailures = 0;
+        await refreshSyncState();
+        viewState = createViewState();
+        render();
+      } catch (error) {
+        result.status = "failed";
+        result.reason = error.reason || "";
+        result.message = error.message || "解析失败";
+        batchImport.failed += 1;
+        batchImport.completed += 1;
+        consecutiveNetworkFailures = result.reason === "NETWORK_FAILED" ? consecutiveNetworkFailures + 1 : 0;
+        renderBatchImport();
+
+        if (await handleConflict(error)) {
+          pauseRemainingBatchResults("数据已更新，已暂停剩余导入");
+          break;
+        }
+
+        if (shouldPauseBatch(result.reason, consecutiveNetworkFailures)) {
+          batchImport.paused = true;
+          pauseRemainingBatchResults("平台或网络限制，已暂停剩余导入");
+          break;
+        }
+      }
+
+      if (!batchImport.active || batchImport.paused) break;
+      if (hasPendingBatchResults()) {
+        await delay(getBatchImportDelayMs());
+      }
+    }
+  } finally {
+    batchImport.active = false;
+    await refreshSyncState();
+    render();
+    if (changed) broadcastUpdate("collections-updated");
+    input.value = "";
+    setBusy(submit, false, "收藏");
+    sampleButton.disabled = false;
+    videoSampleButton.disabled = false;
+    showToast(batchImportSummaryText());
+  }
+}
+
+function shouldPauseBatch(reason, consecutiveNetworkFailures) {
+  return reason === "PLATFORM_BLOCKED" || reason === "PARSE_SCHEMA_CHANGED" || consecutiveNetworkFailures >= 2;
+}
+
+function hasPendingBatchResults() {
+  return Boolean(batchImport?.results?.some((result) => result.status === "pending"));
+}
+
+function pauseRemainingBatchResults(message) {
+  if (!batchImport) return;
+  for (const result of batchImport.results) {
+    if (result.status !== "pending") continue;
+    result.status = "paused";
+    result.message = message;
+    batchImport.completed += 1;
+  }
+  renderBatchImport();
+}
+
+function getBatchImportDelayMs() {
+  const override = Number(window.OPENCOLLECT_BATCH_DELAY_MS);
+  if (Number.isFinite(override) && override >= 0) return override;
+  return DEFAULT_BATCH_IMPORT_DELAY_MS;
+}
+
+function delay(ms) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function upsertNote(note) {
@@ -415,6 +558,7 @@ function render() {
   clearAllButton.hidden = notes.length === 0;
   renderViewControls(view);
   renderSyncState();
+  renderBatchImport();
   renderList(view);
   renderActiveNote();
 }
@@ -624,6 +768,84 @@ function renderStateCard({ tone = "neutral", title, message, compact = false }) 
       ${message ? `<small>${escapeHtml(message)}</small>` : ""}
     </div>
   `;
+}
+
+function renderBatchImport() {
+  if (!batchImportPanel || !batchImportSummary || !batchImportProgress || !batchImportResults) return;
+  if (!batchImport) {
+    batchImportPanel.classList.add("hidden");
+    return;
+  }
+
+  const total = Math.max(1, batchImport.total || 0);
+  const completed = Math.min(batchImport.completed || 0, total);
+  const percent = Math.round((completed / total) * 100);
+  batchImportPanel.classList.remove("hidden");
+  batchImportPanel.classList.toggle("is-active", Boolean(batchImport.active));
+  batchImportPanel.classList.toggle("is-paused", Boolean(batchImport.paused));
+  batchImportSummary.textContent = batchImportSummaryText();
+  if (batchImportSafety) {
+    batchImportSafety.textContent = batchImport.paused ? "已暂停" : batchImport.active ? "保守串行" : "已完成";
+  }
+  batchImportProgress.style.width = `${percent}%`;
+  batchImportResults.innerHTML = batchImport.results.map(renderBatchResult).join("");
+  batchImportResults.querySelectorAll("[data-batch-locate]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.getAttribute("data-batch-locate") || "";
+      if (!id) return;
+      activeId = id;
+      viewState = createViewState();
+      render();
+      focusCollectionCard(id);
+    });
+  });
+}
+
+function batchImportSummaryText() {
+  if (!batchImport) return "等待开始";
+  const pieces = [
+    `${batchImport.completed}/${batchImport.total} 完成`,
+    `成功 ${batchImport.success}`,
+    `重复 ${batchImport.duplicated}`,
+    `失败 ${batchImport.failed}`
+  ];
+  if (batchImport.overflow > 0) pieces.push(`超出 ${batchImport.overflow} 条未导入`);
+  if (batchImport.paused) pieces.push("已暂停");
+  return pieces.join(" · ");
+}
+
+function renderBatchResult(result) {
+  const status = batchStatusMeta(result.status);
+  const title = result.title || result.url;
+  const locateId = result.existingId || (result.status === "success" ? result.noteId : "");
+  const reasonMessage = parseFailureMessage(result.reason) || result.reason || "";
+  const detailMessage = [result.message || status.label, reasonMessage]
+    .filter((message, index, messages) => message && messages.indexOf(message) === index)
+    .join(" · ");
+  return `
+    <li class="batch-result status-${escapeAttr(result.status)}">
+      <span class="batch-result-index">${escapeHtml(result.index)}</span>
+      <span class="batch-result-main">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(detailMessage)}</small>
+      </span>
+      <span class="batch-result-status">${escapeHtml(status.label)}</span>
+      ${locateId ? `<button type="button" class="batch-locate" data-batch-locate="${escapeAttr(locateId)}">定位</button>` : ""}
+    </li>
+  `;
+}
+
+function batchStatusMeta(status) {
+  const labels = {
+    pending: "等待",
+    running: "解析中",
+    success: "成功",
+    duplicate: "重复",
+    "duplicate-input": "重复",
+    failed: "失败",
+    paused: "暂停"
+  };
+  return { label: labels[status] || "未知" };
 }
 
 function getMasonryColumnCount() {

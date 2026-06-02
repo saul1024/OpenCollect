@@ -267,6 +267,196 @@ textarea::placeholder {
   flex: 0 0 auto;
 }
 
+.batch-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 4px 18px;
+  border: 1px solid #dfe2e7;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+  box-shadow: 0 8px 20px rgba(17, 19, 24, 0.04);
+}
+
+.batch-panel-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-panel-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-panel-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 900;
+}
+
+.batch-panel-head span {
+  color: #656b76;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 800;
+}
+
+.batch-safety {
+  flex: 0 0 auto;
+  min-height: 24px;
+  border-radius: 999px;
+  background: #f0f2f5;
+  color: #656b76 !important;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.batch-panel.is-active .batch-safety {
+  background: var(--surface-warm);
+  color: var(--red) !important;
+}
+
+.batch-panel.is-paused {
+  border-color: rgba(255, 36, 66, 0.28);
+  background: var(--surface-warm);
+}
+
+.batch-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef1f5;
+}
+
+.batch-progress span {
+  width: 0;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--red);
+  transition: width 220ms ease;
+}
+
+.batch-results {
+  max-height: 240px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-result {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #edf0f4;
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 8px;
+}
+
+.batch-result-index {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef1f5;
+  color: #656b76;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.batch-result-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.batch-result-main strong,
+.batch-result-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-result-main strong {
+  color: #25262b;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 900;
+}
+
+.batch-result-main small {
+  color: #8a8f99;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+}
+
+.batch-result-status {
+  min-height: 24px;
+  border-radius: 999px;
+  background: #eef1f5;
+  color: #656b76;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.batch-result.status-running .batch-result-status,
+.batch-result.status-success .batch-result-status {
+  background: #eef8f1;
+  color: #267245;
+}
+
+.batch-result.status-duplicate .batch-result-status,
+.batch-result.status-duplicate-input .batch-result-status {
+  background: #f1f4ff;
+  color: #2f58c8;
+}
+
+.batch-result.status-failed .batch-result-status,
+.batch-result.status-paused .batch-result-status {
+  background: var(--surface-warm);
+  color: var(--red);
+}
+
+.batch-locate {
+  min-height: 26px;
+  border: 1px solid #dfe2e7;
+  border-radius: 7px;
+  background: #fff;
+  color: #565b66;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.batch-locate:hover {
+  border-color: rgba(255, 36, 66, 0.28);
+  color: var(--red);
+  background: var(--surface-warm);
+}
+
 .feed-controls {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(132px, auto)) auto;
@@ -1649,6 +1839,28 @@ body.modal-open {
   .feed-toolbar {
     flex-direction: column-reverse;
     align-items: flex-end;
+  }
+
+  .batch-panel {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .batch-panel-head {
+    align-items: flex-start;
+  }
+
+  .batch-results {
+    max-height: 300px;
+  }
+
+  .batch-result {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+
+  .batch-locate {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 
   .feed-controls {

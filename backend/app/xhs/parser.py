@@ -181,10 +181,21 @@ def browser_headers() -> dict[str, str]:
 
 
 def extract_first_url(input_text: str) -> str:
-    match = URL_RE.search(input_text)
-    if not match:
-        return ""
-    return match.group(0).rstrip("，。,.")
+    urls = extract_urls(input_text)
+    return urls[0] if urls else ""
+
+
+def extract_urls(input_text: str) -> list[str]:
+    urls: list[str] = []
+    for match in URL_RE.finditer(input_text):
+        url = normalize_extracted_url(match.group(0))
+        if url:
+            urls.append(url)
+    return urls
+
+
+def normalize_extracted_url(raw_url: str) -> str:
+    return raw_url.strip().rstrip("，。,.;；、!！")
 
 
 def extract_note_id(raw_url: str) -> str:

@@ -13,6 +13,8 @@ export const SORT_OPTIONS = [
   { value: "source-asc", label: "发布时间 旧到新" }
 ];
 
+const URL_RE = /https?:\/\/[^\s"'<>）)]+/g;
+
 export function createViewState(overrides = {}) {
   return normalizeViewState({
     query: "",
@@ -212,6 +214,62 @@ export function getMediaAspectRatio(note) {
   const dimensions = getPrimaryMediaDimensions(note);
   if (!dimensions) return 0.75;
   return clampRatio(dimensions.width / dimensions.height);
+}
+
+export function extractUrls(inputText) {
+  const matches = String(inputText || "").match(URL_RE) || [];
+  return matches.map(normalizeExtractedUrl).filter(Boolean);
+}
+
+export function createBatchImportPlan(inputText, options = {}) {
+  const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0 ? Number(options.limit) : 20;
+  const urls = extractUrls(inputText);
+  const limitedUrls = urls.slice(0, limit);
+  const seen = new Map();
+  const results = limitedUrls.map((url, index) => {
+    const key = normalizeBatchUrlKey(url);
+    const firstIndex = seen.get(key);
+    if (firstIndex !== undefined) {
+      return {
+        id: `input-${index + 1}`,
+        url,
+        index: index + 1,
+        status: "duplicate-input",
+        duplicateOf: firstIndex + 1,
+        message: "本批次重复链接，已跳过"
+      };
+    }
+    seen.set(key, index);
+    return {
+      id: `input-${index + 1}`,
+      url,
+      index: index + 1,
+      status: "pending",
+      message: "等待导入"
+    };
+  });
+
+  return {
+    totalExtracted: urls.length,
+    total: limitedUrls.length,
+    overflow: Math.max(0, urls.length - limitedUrls.length),
+    queued: results.filter((result) => result.status === "pending").length,
+    results
+  };
+}
+
+function normalizeExtractedUrl(rawUrl) {
+  return String(rawUrl || "").trim().replace(/[，。,.;；、!！]+$/g, "");
+}
+
+function normalizeBatchUrlKey(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
 }
 
 function getPrimaryMediaDimensions(note) {

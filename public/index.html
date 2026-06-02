@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCollect rednote PoC</title>
-    <link rel="stylesheet" href="/styles.css?v=20260602-p4-detail" />
+    <link rel="stylesheet" href="/styles.css?v=20260602-p5-batch" />
   </head>
   <body>
     <header class="app-header" aria-label="顶部导航">
@@ -55,6 +55,19 @@
             <span id="countBadge">0</span>
           </div>
         </div>
+        <section id="batchImportPanel" class="batch-panel hidden" aria-live="polite">
+          <div class="batch-panel-head">
+            <div>
+              <strong>批量导入</strong>
+              <span id="batchImportSummary">等待开始</span>
+            </div>
+            <span id="batchImportSafety" class="batch-safety">保守串行</span>
+          </div>
+          <div class="batch-progress" aria-hidden="true">
+            <span id="batchImportProgress"></span>
+          </div>
+          <ol id="batchImportResults" class="batch-results"></ol>
+        </section>
         <div class="feed-controls" aria-label="搜索和筛选">
           <label class="search-field" for="collectionSearch">
             <span>搜索</span>
@@ -135,6 +148,6 @@
     </div>
 
     <div id="toast" class="toast hidden" role="status"></div>
-    <script src="/app.js?v=20260602-p4-detail" type="module"></script>
+    <script src="/app.js?v=20260602-p5-batch" type="module"></script>
   </body>
 </html>
