@@ -23,6 +23,41 @@
 - ...
 ```
 
+## 2026-06-02 - P5 第二轮重试和 JSON 导入导出
+
+任务：
+- `OC-P5-004`
+- `OC-P5-005`
+- `OC-P5-006`
+
+完成：
+- 批量导入结果中的失败项和暂停项新增“重试”入口，单项重试只重新请求该链接，不重跑已成功或已重复的项。
+- 批量统计改为根据每条结果状态重新计算，重试后成功数、失败数、重复数不会漂移。
+- 重试继续走现有 `baseRevision` 和本地写入语义：冲突时暂停并提示，不静默覆盖；成功后只标记本地 dirty，不自动上传 COS。
+- 新增 `GET /api/collections/export`，导出完整数据文件，包含 `schemaVersion`、`revision`、`updatedAt`、`collections`。
+- 新增 `POST /api/collections/import-json`，导入完整 JSON 文件，复用 Store 去重、revision 校验和 sync dirty 标记。
+- 前端新增“导出 JSON”和“导入 JSON”按钮；导入前校验 JSON、schema 和 `collections` 字段。
+- 非法 JSON 或不支持的导入文件不会请求后端，不改写现有收藏。
+- 输出验收截图：`outputs/p5/p5-json-retry-after.png`、`outputs/p5/p5-json-mobile.png`。
+
+验证：
+- `node --check public/app.js`
+- `node --check public/view-model.js`
+- `node --check frontend-tests/view-model.test.mjs`
+- `npm run test:frontend`
+- `uv run pytest backend/tests/test_api.py backend/tests/test_json_store.py`
+- Chrome headless mock 冒烟：失败项重试前调用成功链接 1 次、失败链接 1 次；重试后只额外调用失败链接 1 次，最终成功 2、失败 0。
+- Chrome headless mock 冒烟：导出生成 `application/json` 下载，文件名包含 revision。
+- Chrome headless mock 冒烟：合法 JSON 导入携带当前 `baseRevision`，非法 JSON 不发起导入请求。
+- 移动端 Chrome headless 截图检查：`scrollWidth=390`、`innerWidth=390`，新增工具按钮无横向溢出。
+
+遗留问题：
+- 真实rednote批量解析仍可能受平台风控影响；当前策略继续限制为小批次、串行、低频。
+- JSON 导入目前采用整体文件导入，不提供字段级冲突合并 UI；旧 revision 冲突会要求用户刷新后重试。
+
+下一步：
+- 进入 `P6 上线底座`，或先补 P2.5 中仍未覆盖的前端同步状态自动化测试。
+
 ## 2026-06-02 - P5 第一轮批量链接导入
 
 任务：

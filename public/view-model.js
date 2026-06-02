@@ -258,6 +258,24 @@ export function createBatchImportPlan(inputText, options = {}) {
   };
 }
 
+export function normalizeImportDataFile(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("不支持的导入文件");
+  }
+  if (payload.schemaVersion !== 1) {
+    throw new Error("不支持的导入文件");
+  }
+  if (!Array.isArray(payload.collections)) {
+    throw new Error("不支持的导入文件");
+  }
+  return {
+    schemaVersion: payload.schemaVersion,
+    revision: Number(payload.revision || 0),
+    updatedAt: String(payload.updatedAt || ""),
+    collections: payload.collections
+  };
+}
+
 function normalizeExtractedUrl(rawUrl) {
   return String(rawUrl || "").trim().replace(/[，。,.;；、!！]+$/g, "");
 }

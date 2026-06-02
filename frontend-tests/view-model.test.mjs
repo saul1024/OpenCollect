@@ -8,6 +8,7 @@ import {
   getCollectionView,
   getMediaAspectRatio,
   parseTags,
+  normalizeImportDataFile,
   sortNotes
 } from "../public/view-model.js";
 
@@ -105,6 +106,20 @@ https://www.xiaohongshu.com/explore/note-2?xsec_token=abc. 普通文案 https://
   assert.equal(plan.totalExtracted, 22);
   assert.equal(plan.total, 20);
   assert.equal(plan.overflow, 2);
+}
+
+{
+  const dataFile = normalizeImportDataFile({
+    schemaVersion: 1,
+    revision: 12,
+    updatedAt: "2026-06-02T00:00:00Z",
+    collections: [{ id: "import-1" }]
+  });
+  assert.equal(dataFile.schemaVersion, 1);
+  assert.equal(dataFile.revision, 12);
+  assert.deepEqual(dataFile.collections.map((item) => item.id), ["import-1"]);
+  assert.throws(() => normalizeImportDataFile({ schemaVersion: 2, collections: [] }), /不支持/);
+  assert.throws(() => normalizeImportDataFile({ schemaVersion: 1 }), /不支持/);
 }
 
 {

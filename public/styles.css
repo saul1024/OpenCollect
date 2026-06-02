@@ -439,7 +439,8 @@ textarea::placeholder {
   color: var(--red);
 }
 
-.batch-locate {
+.batch-locate,
+.batch-retry {
   min-height: 26px;
   border: 1px solid #dfe2e7;
   border-radius: 7px;
@@ -451,10 +452,15 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
-.batch-locate:hover {
+.batch-locate:hover:not(:disabled),
+.batch-retry:hover:not(:disabled) {
   border-color: rgba(255, 36, 66, 0.28);
   color: var(--red);
   background: var(--surface-warm);
+}
+
+.batch-retry {
+  color: var(--red);
 }
 
 .feed-controls {
@@ -597,7 +603,8 @@ textarea::placeholder {
   background: var(--red);
 }
 
-.feed-clear {
+.feed-clear,
+.feed-json {
   min-height: 32px;
   border: 1px solid #dfe2e7;
   border-radius: 8px;
@@ -609,7 +616,8 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
-.feed-clear:hover:not(:disabled) {
+.feed-clear:hover:not(:disabled),
+.feed-json:hover:not(:disabled) {
   border-color: rgba(255, 36, 66, 0.3);
   color: var(--red);
   background: var(--surface-warm);
@@ -1858,7 +1866,8 @@ body.modal-open {
     grid-template-columns: 28px minmax(0, 1fr) auto;
   }
 
-  .batch-locate {
+  .batch-locate,
+  .batch-retry {
     grid-column: 2 / -1;
     justify-self: start;
   }

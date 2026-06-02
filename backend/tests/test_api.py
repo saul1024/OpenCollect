@@ -33,6 +33,10 @@ def test_collections_api_matches_frontend_contract(tmp_path: Path):
         assert response.status_code == 200
         assert response.json() == {"collections": [], "revision": 0, "updatedAt": ""}
 
+        response = client.get("/api/collections/export")
+        assert response.status_code == 200
+        assert response.json() == {"schemaVersion": 1, "collections": [], "revision": 0, "updatedAt": ""}
+
         response = client.get("/api/sync/status")
         assert response.status_code == 200
         assert response.json()["status"] == "disabled"
@@ -67,6 +71,14 @@ def test_collections_api_matches_frontend_contract(tmp_path: Path):
         assert payload["revision"] == 1
         assert payload["collections"][0]["sourceId"] == "api-note-1"
 
+        response = client.get("/api/collections/export")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["schemaVersion"] == 1
+        assert payload["revision"] == 1
+        assert payload["collections"][0]["sourceId"] == "api-note-1"
+        assert client.get("/api/collections").json()["revision"] == 1
+
         response = client.patch(
             "/api/collections/api-note-1",
             json={"title": "编辑后", "content": "编辑正文", "tags": ["后端", "#后端"]},
@@ -86,6 +98,55 @@ def test_collections_api_matches_frontend_contract(tmp_path: Path):
         payload = response.json()
         assert payload["collections"] == []
         assert len(payload["previous"]) == 1
+
+
+def test_import_json_imports_dedupes_and_rejects_unsupported_schema(tmp_path: Path):
+    with TestClient(api_app(tmp_path, QueueParser())) as client:
+        base_revision = client.get("/api/collections").json()["revision"]
+        duplicate = api_collection("json-note-duplicate")
+        duplicate.source_url = api_collection("json-note-1").source_url
+        duplicate.canonical_url = api_collection("json-note-1").canonical_url
+        duplicate.title = "重复覆盖标题"
+
+        response = client.post(
+            "/api/collections/import-json",
+            json={
+                "schemaVersion": 1,
+                "revision": 7,
+                "updatedAt": "2026-06-02T00:00:00Z",
+                "collections": [
+                    api_collection("json-note-1").model_dump(by_alias=True),
+                    duplicate.model_dump(by_alias=True),
+                    api_collection("json-note-2").model_dump(by_alias=True),
+                ],
+                "baseRevision": base_revision,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["schemaVersion"] == 1
+        assert payload["imported"] == 2
+        assert payload["updated"] == 1
+        assert payload["skipped"] == 0
+        assert payload["revision"] == 1
+        assert [item["id"] for item in payload["collections"]] == ["json-note-duplicate", "json-note-2"]
+        assert payload["collections"][0]["title"] == "重复覆盖标题"
+
+        response = client.post(
+            "/api/collections/import-json",
+            json={
+                "schemaVersion": 2,
+                "revision": 1,
+                "updatedAt": "",
+                "collections": [api_collection("json-note-3").model_dump(by_alias=True)],
+                "baseRevision": payload["revision"],
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["reason"] == "UNSUPPORTED_SCHEMA"
+        assert client.get("/api/collections").json()["revision"] == 1
 
 
 def test_collect_duplicate_returns_existing_without_overwrite(tmp_path: Path):
@@ -201,6 +262,16 @@ def test_write_apis_reject_stale_base_revision(tmp_path: Path):
                 json={"collections": [api_collection("note-2").model_dump(by_alias=True)], "baseRevision": stale_revision},
             ),
             lambda: client.post(
+                "/api/collections/import-json",
+                json={
+                    "schemaVersion": 1,
+                    "revision": 1,
+                    "updatedAt": "",
+                    "collections": [api_collection("note-2").model_dump(by_alias=True)],
+                    "baseRevision": stale_revision,
+                },
+            ),
+            lambda: client.post(
                 "/api/collect",
                 json={"input": "https://www.xiaohongshu.com/explore/note-2", "baseRevision": stale_revision},
             ),
@@ -307,6 +378,35 @@ def test_patch_tags_marks_sync_dirty(tmp_path: Path):
         status = client.get("/api/sync/status").json()
         assert status["dirty"] is True
         assert status["pending_revision"] == payload["revision"]
+
+
+def test_import_json_marks_sync_dirty(tmp_path: Path):
+    syncer = FakeSyncer(remote=None)
+    settings = sync_api_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+    app = FastAPI()
+    app.include_router(create_api_router(store, QueueParser(), DummyMediaProxy(), manager))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/collections/import-json",
+            json={
+                "schemaVersion": 1,
+                "revision": 0,
+                "updatedAt": "",
+                "collections": [api_collection("json-dirty-note").model_dump(by_alias=True)],
+                "baseRevision": 0,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        status = client.get("/api/sync/status").json()
+        assert status["dirty"] is True
+        assert status["pending_revision"] == payload["revision"]
+        assert not syncer.pushes
 
 
 def api_app(tmp_path: Path, parser) -> FastAPI:

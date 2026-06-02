@@ -21,6 +21,10 @@ class ImportLocalRequest(BaseModel):
     base_revision: int | None = Field(None, alias="baseRevision")
 
 
+class ImportJsonRequest(DataFile):
+    base_revision: int | None = Field(None, alias="baseRevision")
+
+
 class RevisionRequest(BaseModel):
     base_revision: int | None = Field(None, alias="baseRevision")
 
@@ -42,12 +46,9 @@ def create_api_router(
         snapshot = store.snapshot()
         return snapshot_payload(snapshot)
 
-    @router.get("/collections/{collection_id}")
-    async def get_collection(collection_id: str):
-        collection = store.get(collection_id)
-        if collection is None:
-            return error_response(404, "NOT_FOUND", "收藏不存在")
-        return {"collection": model_to_api(collection)}
+    @router.get("/collections/export")
+    async def export_collections():
+        return data_file_payload(store.snapshot())
 
     @router.post("/collections/import-local")
     async def import_local_collections(request: ImportLocalRequest):
@@ -60,6 +61,28 @@ def create_api_router(
             "imported": imported,
             "updated": updated,
         }
+
+    @router.post("/collections/import-json")
+    async def import_json_collections(request: ImportJsonRequest):
+        if request.schema_version != 1:
+            return error_response(422, "IMPORT_FAILED", "不支持的导入文件", reason="UNSUPPORTED_SCHEMA")
+        try:
+            imported, updated, snapshot = store.import_collections(request.collections, base_revision=request.base_revision)
+        except StoreError as exc:
+            return store_error_response(exc)
+        return {
+            **data_file_payload(snapshot),
+            "imported": imported,
+            "updated": updated,
+            "skipped": 0,
+        }
+
+    @router.get("/collections/{collection_id}")
+    async def get_collection(collection_id: str):
+        collection = store.get(collection_id)
+        if collection is None:
+            return error_response(404, "NOT_FOUND", "收藏不存在")
+        return {"collection": model_to_api(collection)}
 
     @router.patch("/collections/{collection_id}")
     async def patch_collection(collection_id: str, patch: CollectionPatch):
@@ -226,6 +249,10 @@ def snapshot_payload(snapshot: DataFile) -> dict:
         "revision": snapshot.revision,
         "updatedAt": snapshot.updated_at,
     }
+
+
+def data_file_payload(snapshot: DataFile) -> dict:
+    return model_to_api(snapshot)
 
 
 def error_response(status: int, code: str, message: str, **extra) -> JSONResponse:

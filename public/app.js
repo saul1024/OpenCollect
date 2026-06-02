@@ -7,6 +7,7 @@ import {
   getCollectionView,
   getMediaAspectRatio,
   getPlatformMeta,
+  normalizeImportDataFile,
   parseTags
 } from "./view-model.js";
 
@@ -20,6 +21,9 @@ const syncStatus = document.querySelector("#syncStatus");
 const syncPushButton = document.querySelector("#syncPushButton");
 const syncPullButton = document.querySelector("#syncPullButton");
 const syncForcePushButton = document.querySelector("#syncForcePushButton");
+const exportJsonButton = document.querySelector("#exportJsonButton");
+const importJsonButton = document.querySelector("#importJsonButton");
+const importJsonInput = document.querySelector("#importJsonInput");
 const list = document.querySelector("#collectionList");
 const noteModal = document.querySelector("#noteModal");
 const noteView = document.querySelector("#noteView");
@@ -95,6 +99,9 @@ clearAllButton.addEventListener("click", openClearConfirm);
 syncPushButton.addEventListener("click", saveAndUpload);
 syncPullButton?.addEventListener("click", pullCloudVersion);
 syncForcePushButton?.addEventListener("click", () => saveAndUpload({ force: true }));
+exportJsonButton?.addEventListener("click", exportCollectionsJson);
+importJsonButton?.addEventListener("click", () => importJsonInput?.click());
+importJsonInput?.addEventListener("change", importCollectionsJsonFile);
 collectionSearch?.addEventListener("input", () => {
   viewState = createViewState({ ...viewState, query: collectionSearch.value });
   render();
@@ -286,10 +293,13 @@ async function collectBatch(value, plan = createBatchImportPlan(value, { limit: 
     duplicated: duplicateInputCount,
     results: plan.results.map((item) => ({ ...item }))
   };
+  recomputeBatchImportStats();
   renderBatchImport();
 
   if (!plan.total) {
+    batchImport.active = false;
     showToast("没有识别到链接，请粘贴rednote分享文本或 URL");
+    renderBatchImport();
     return;
   }
 
@@ -309,30 +319,13 @@ async function collectBatch(value, plan = createBatchImportPlan(value, { limit: 
 
       try {
         const payload = await submitCollect(result.url);
-        result.noteId = payload.note?.id || "";
-        result.title = payload.note?.title || "";
-        if (payload.duplicated) {
-          result.status = "duplicate";
-          result.existingId = payload.existingId || payload.note?.id || "";
-          result.message = "已收藏过";
-          batchImport.duplicated += 1;
-        } else {
-          result.status = "success";
-          result.message = "已收藏";
-          batchImport.success += 1;
-          changed = true;
-        }
-        batchImport.completed += 1;
+        changed = applyBatchSuccess(result, payload) || changed;
         consecutiveNetworkFailures = 0;
         await refreshSyncState();
         viewState = createViewState();
         render();
       } catch (error) {
-        result.status = "failed";
-        result.reason = error.reason || "";
-        result.message = error.message || "解析失败";
-        batchImport.failed += 1;
-        batchImport.completed += 1;
+        applyBatchFailure(result, error);
         consecutiveNetworkFailures = result.reason === "NETWORK_FAILED" ? consecutiveNetworkFailures + 1 : 0;
         renderBatchImport();
 
@@ -366,6 +359,83 @@ async function collectBatch(value, plan = createBatchImportPlan(value, { limit: 
   }
 }
 
+function applyBatchSuccess(result, payload) {
+  result.noteId = payload.note?.id || "";
+  result.title = payload.note?.title || "";
+  result.reason = "";
+  if (payload.duplicated) {
+    result.status = "duplicate";
+    result.existingId = payload.existingId || payload.note?.id || "";
+    result.message = "已收藏过";
+    recomputeBatchImportStats();
+    return false;
+  }
+
+  result.status = "success";
+  result.message = "已收藏";
+  recomputeBatchImportStats();
+  return true;
+}
+
+function applyBatchFailure(result, error) {
+  result.status = "failed";
+  result.reason = error.reason || "";
+  result.message = error.message || "解析失败";
+  recomputeBatchImportStats();
+}
+
+function recomputeBatchImportStats() {
+  if (!batchImport) return;
+  const results = batchImport.results || [];
+  batchImport.completed = results.filter((result) => !["pending", "running"].includes(result.status)).length;
+  batchImport.success = results.filter((result) => result.status === "success").length;
+  batchImport.failed = results.filter((result) => result.status === "failed").length;
+  batchImport.duplicated = results.filter((result) => result.status === "duplicate" || result.status === "duplicate-input").length;
+  batchImport.paused = results.some((result) => result.status === "paused");
+}
+
+async function retryBatchResult(resultId) {
+  if (!batchImport) return;
+  if (batchImport.active) {
+    showToast("已有导入任务进行中");
+    return;
+  }
+  const result = batchImport.results.find((item) => item.id === resultId);
+  if (!result || !["failed", "paused"].includes(result.status)) return;
+
+  batchImport.active = true;
+  result.status = "running";
+  result.message = "解析中";
+  result.reason = "";
+  recomputeBatchImportStats();
+  renderBatchImport();
+
+  let changed = false;
+  try {
+    const payload = await submitCollect(result.url);
+    changed = applyBatchSuccess(result, payload);
+    await refreshSyncState();
+    viewState = createViewState();
+    render();
+  } catch (error) {
+    applyBatchFailure(result, error);
+    renderBatchImport();
+    await refreshSyncState();
+    if (await handleConflict(error)) {
+      result.status = "failed";
+      result.message = error.message || "数据已更新，请重新确认后重试";
+      result.reason = error.reason || "CONFLICT";
+    }
+  } finally {
+    batchImport.active = false;
+    recomputeBatchImportStats();
+    await refreshSyncState();
+    render();
+    if (changed) broadcastUpdate("collections-updated");
+    showToast(batchImportSummaryText());
+  }
+}
+
 function shouldPauseBatch(reason, consecutiveNetworkFailures) {
   return reason === "PLATFORM_BLOCKED" || reason === "PARSE_SCHEMA_CHANGED" || consecutiveNetworkFailures >= 2;
 }
@@ -380,8 +450,8 @@ function pauseRemainingBatchResults(message) {
     if (result.status !== "pending") continue;
     result.status = "paused";
     result.message = message;
-    batchImport.completed += 1;
   }
+  recomputeBatchImportStats();
   renderBatchImport();
 }
 
@@ -799,6 +869,11 @@ function renderBatchImport() {
       focusCollectionCard(id);
     });
   });
+  batchImportResults.querySelectorAll("[data-batch-retry]").forEach((button) => {
+    button.addEventListener("click", () => {
+      retryBatchResult(button.getAttribute("data-batch-retry") || "");
+    });
+  });
 }
 
 function batchImportSummaryText() {
@@ -818,6 +893,7 @@ function renderBatchResult(result) {
   const status = batchStatusMeta(result.status);
   const title = result.title || result.url;
   const locateId = result.existingId || (result.status === "success" ? result.noteId : "");
+  const canRetry = ["failed", "paused"].includes(result.status);
   const reasonMessage = parseFailureMessage(result.reason) || result.reason || "";
   const detailMessage = [result.message || status.label, reasonMessage]
     .filter((message, index, messages) => message && messages.indexOf(message) === index)
@@ -831,6 +907,7 @@ function renderBatchResult(result) {
       </span>
       <span class="batch-result-status">${escapeHtml(status.label)}</span>
       ${locateId ? `<button type="button" class="batch-locate" data-batch-locate="${escapeAttr(locateId)}">定位</button>` : ""}
+      ${canRetry ? `<button type="button" class="batch-retry" data-batch-retry="${escapeAttr(result.id)}" ${batchImport?.active ? "disabled" : ""}>重试</button>` : ""}
     </li>
   `;
 }
@@ -1494,6 +1571,76 @@ async function pullCloudVersion() {
     isSyncing = false;
     renderSyncState();
   }
+}
+
+async function exportCollectionsJson() {
+  if (!exportJsonButton) return;
+  setBusy(exportJsonButton, true, "导出中");
+  try {
+    const payload = await requestJson("/api/collections/export");
+    downloadJson(payload);
+    showToast(`已导出 ${Array.isArray(payload.collections) ? payload.collections.length : 0} 条收藏`);
+  } catch (error) {
+    showToast(error.message || "导出失败");
+  } finally {
+    setBusy(exportJsonButton, false, "导出 JSON");
+  }
+}
+
+async function importCollectionsJsonFile(event) {
+  const file = event.target?.files?.[0];
+  if (!file || !importJsonButton) return;
+
+  setBusy(importJsonButton, true, "导入中");
+  try {
+    const text = await file.text();
+    const data = parseImportJson(text);
+    const payload = await requestJson("/api/collections/import-json", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ ...data, baseRevision: currentRevision })
+    });
+    notes = Array.isArray(payload.collections) ? payload.collections : [];
+    updateRevisionFromPayload(payload);
+    await refreshSyncState();
+    viewState = createViewState();
+    render();
+    broadcastUpdate("collections-updated");
+    showToast(`已导入 ${payload.imported || 0} 条，更新 ${payload.updated || 0} 条`);
+  } catch (error) {
+    if (await handleConflict(error)) return;
+    showToast(error.message || "导入失败");
+  } finally {
+    setBusy(importJsonButton, false, "导入 JSON");
+    event.target.value = "";
+  }
+}
+
+function parseImportJson(text) {
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("导入文件不是合法 JSON");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("不支持的导入文件");
+  }
+  return normalizeImportDataFile(payload);
+}
+
+function downloadJson(payload) {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `opencollect-collections-rev${Number(payload?.revision || 0)}.json`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 async function refreshNote(id) {
