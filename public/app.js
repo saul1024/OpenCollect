@@ -464,34 +464,22 @@ function renderList(view = getCollectionView(notes, viewState)) {
   if (!notes.length) {
     list.classList.add("empty");
     list.style.removeProperty("--masonry-columns");
-    list.innerHTML = `
-      <div class="feed-empty">
-        <span class="empty-cover" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </span>
-        <strong>暂无收藏</strong>
-        <small>粘贴rednote分享链接，或加载一个多图示例</small>
-      </div>
-    `;
+    list.innerHTML = renderStateCard({
+      tone: "empty",
+      title: "暂无收藏",
+      message: "粘贴rednote分享链接，或加载一个示例。"
+    });
     return;
   }
 
   if (!view.items.length) {
     list.classList.add("empty");
     list.style.removeProperty("--masonry-columns");
-    list.innerHTML = `
-      <div class="feed-empty">
-        <span class="empty-cover" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </span>
-        <strong>没有匹配收藏</strong>
-        <small>调整搜索或筛选</small>
-      </div>
-    `;
+    list.innerHTML = renderStateCard({
+      tone: "filtered",
+      title: "没有匹配收藏",
+      message: "换个关键词，或清除当前筛选。"
+    });
     return;
   }
 
@@ -624,6 +612,20 @@ function renderCardMenu(note, isOpen) {
   `;
 }
 
+function renderStateCard({ tone = "neutral", title, message, compact = false }) {
+  return `
+    <div class="state-card state-card-${escapeAttr(tone)}${compact ? " compact" : ""}">
+      <span class="state-visual" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </span>
+      <strong>${escapeHtml(title)}</strong>
+      ${message ? `<small>${escapeHtml(message)}</small>` : ""}
+    </div>
+  `;
+}
+
 function getMasonryColumnCount() {
   const width = list.getBoundingClientRect().width || document.documentElement.clientWidth || window.innerWidth;
   const minCardWidth = width <= 560 ? 158 : width <= 920 ? 180 : 230;
@@ -650,6 +652,8 @@ function renderActiveNote() {
   const authorAvatar = note.author?.avatar ? imageProxy(note.author.avatar) : "";
   const platform = getPlatformMeta(note);
   const isRefreshing = refreshingIds.has(note.id);
+  const collectedAt = formatDate(note.collectedAt || note.createdAt);
+  const sourceCreatedAt = note.sourceCreatedAt ? formatDate(note.sourceCreatedAt) : "";
 
   noteView.innerHTML = `
     <header class="note-header">
@@ -657,32 +661,36 @@ function renderActiveNote() {
         ${authorAvatar ? `<img src="${escapeAttr(authorAvatar)}" alt="" />` : `<span class="avatar-fallback"></span>`}
         <div>
           <strong>${escapeHtml(authorName)}</strong>
-          <small><span class="detail-platform platform-${escapeAttr(platform.key)}">${escapeHtml(platform.label)}</span>${formatDate(note.createdAt)}</small>
+          <small><span class="detail-platform platform-${escapeAttr(platform.key)}">${escapeHtml(platform.label)}</span>${collectedAt}</small>
         </div>
       </div>
-      <div class="note-actions">
-        <a class="source-link" href="${escapeAttr(note.sourceUrl)}" target="_blank" rel="noreferrer">原文</a>
-        <button type="button" class="note-tool" data-action="refresh-active" ${isRefreshing ? "disabled" : ""}>${isRefreshing ? "刷新中" : "重新抓取"}</button>
-        <button type="button" class="note-tool" data-action="edit-active">编辑</button>
-        <button type="button" class="note-tool danger" data-action="delete-active">删除</button>
-        <button type="button" class="detail-close" data-action="collapse-detail" aria-label="关闭详情" title="关闭详情">×</button>
-      </div>
+      <button type="button" class="detail-close" data-action="collapse-detail" aria-label="关闭详情" title="关闭详情">×</button>
     </header>
 
     ${media}
 
     <div class="note-copy">
-      <h2 id="noteDetailTitle">${escapeHtml(note.title || "无标题笔记")}</h2>
-      <p>${formatContent(note.content)}</p>
+      <div class="detail-meta-row" aria-label="笔记来源和时间">
+        <span class="detail-platform platform-${escapeAttr(platform.key)}">${escapeHtml(platform.label)}</span>
+        <span>收藏于 ${collectedAt}</span>
+        ${sourceCreatedAt ? `<span>发布于 ${sourceCreatedAt}</span>` : ""}
+      </div>
+      <article class="note-article">
+        <h2 id="noteDetailTitle">${escapeHtml(note.title || "无标题笔记")}</h2>
+        <div class="note-text">${formatContent(note.content || "这条收藏暂时没有正文。")}</div>
+      </article>
       ${renderFetchNotice(note)}
-      ${note.tags?.length ? `<div class="tags">${note.tags.map((tag) => `<button type="button" data-action="filter-tag" data-tag="${escapeAttr(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div>` : ""}
+      ${note.tags?.length ? `<div class="tags detail-tags" aria-label="标签">${note.tags.map((tag) => `<button type="button" data-action="filter-tag" data-tag="${escapeAttr(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div>` : ""}
     </div>
 
-    <footer class="stats">
-      <span><strong>${escapeHtml(note.stats?.likes || "0")}</strong>赞</span>
-      <span><strong>${escapeHtml(note.stats?.collects || "0")}</strong>收藏</span>
-      <span><strong>${escapeHtml(note.stats?.comments || "0")}</strong>评论</span>
-      <span><strong>${escapeHtml(note.stats?.shares || "0")}</strong>分享</span>
+    <footer class="detail-footer">
+      ${renderDetailStats(note)}
+      <div class="note-actions">
+        ${note.sourceUrl ? `<a class="source-link" href="${escapeAttr(note.sourceUrl)}" target="_blank" rel="noreferrer">原文</a>` : ""}
+        <button type="button" class="note-tool" data-action="refresh-active" ${isRefreshing ? "disabled" : ""}>${isRefreshing ? "刷新中" : "重新抓取"}</button>
+        <button type="button" class="note-tool" data-action="edit-active">编辑</button>
+        <button type="button" class="note-tool danger" data-action="delete-active">删除</button>
+      </div>
     </footer>
   `;
 
@@ -744,13 +752,25 @@ function renderMedia(note) {
   if (note.type === "video") {
     return `
       <div class="media-empty">
-        <span>这个视频收藏缺少播放地址，请重新收藏原链接</span>
+        ${renderStateCard({
+          tone: "media",
+          title: "缺少视频地址",
+          message: "请重新抓取或重新收藏原链接。"
+        })}
       </div>
     `;
   }
 
   if (!note.images?.length) {
-    return `<div class="media-empty">无图片内容</div>`;
+    return `
+      <div class="media-empty">
+        ${renderStateCard({
+          tone: "media",
+          title: "暂无媒体",
+          message: "这条收藏没有可展示的图片内容。"
+        })}
+      </div>
+    `;
   }
 
   const imageUrlSets = getImageProxyUrlSets(note.images);
@@ -798,7 +818,23 @@ function renderFetchNotice(note) {
   const state = note.fetch || {};
   if (state.lastStatus !== "failed") return "";
   const message = state.lastErrorMessage || parseFailureMessage(state.lastErrorReason) || "最近一次抓取失败";
-  return `<div class="fetch-notice">最近抓取失败：${escapeHtml(message)}</div>`;
+  return renderStateCard({
+    tone: "warning",
+    title: "最近抓取失败",
+    message,
+    compact: true
+  });
+}
+
+function renderDetailStats(note) {
+  return `
+    <div class="stats" aria-label="互动数据">
+      <span><strong>${escapeHtml(note.stats?.likes || "0")}</strong>赞</span>
+      <span><strong>${escapeHtml(note.stats?.collects || "0")}</strong>收藏</span>
+      <span><strong>${escapeHtml(note.stats?.comments || "0")}</strong>评论</span>
+      <span><strong>${escapeHtml(note.stats?.shares || "0")}</strong>分享</span>
+    </div>
+  `;
 }
 
 function setupCarousel() {

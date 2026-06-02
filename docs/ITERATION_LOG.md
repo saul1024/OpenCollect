@@ -23,6 +23,35 @@
 - ...
 ```
 
+## 2026-06-02 - P4 第二轮详情和状态 UI 打磨
+
+任务：
+- `OC-P4-004`
+- `OC-P4-005`
+
+完成：
+- 详情浮层右侧重排为作者、来源时间、标题正文、标签、互动统计和底部操作，降低操作按钮对阅读区的干扰。
+- 详情页保留原文、重新抓取、编辑、删除入口，并把它们收敛到底部操作区。
+- 详情页标签继续可点击筛选，正文、标签和互动数据更接近rednote笔记的阅读节奏。
+- 新增统一 `state-card` 状态组件，复用到空收藏、搜索无结果、媒体缺失和抓取失败提示。
+- 移动端详情底部统计和操作按钮改为两列网格，避免窄屏挤压和横向溢出。
+- 输出验收截图：`outputs/p4/p4-detail-after-desktop.png`、`outputs/p4/p4-detail-after-mobile.png`、`outputs/p4/p4-detail-mobile-footer-after.png`、`outputs/p4/p4-state-no-results-after.png`。
+
+验证：
+- `node --check public/app.js`
+- `node --check public/view-model.js`
+- `npm run test:frontend`
+- `uv run pytest`
+- `uv run python -m compileall backend/app backend/tests`
+- Chrome headless 真实页面冒烟：详情可打开；详情 footer 有 4 个操作；统计有 4 项；搜索无结果状态文案正确；桌面和移动端无横向溢出。
+- 临时数据目录 Chrome headless 回归：详情页删除后 6 条变 5 条，toast 撤销后恢复 6 条；未触碰真实 `data/collections.json` 或 COS。
+
+遗留问题：
+- P4 已完成；真实rednote不同媒体比例、视频和抓取失败样本仍需要后续在新增样本时持续回归。
+
+下一步：
+- 进入 `P5 批量链接导入和导出`。
+
 ## 2026-06-02 - P4 第一轮视觉和交互打磨
 
 任务：
