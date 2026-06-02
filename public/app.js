@@ -1,3 +1,13 @@
+import {
+  ALL_VALUE,
+  SORT_OPTIONS,
+  TYPE_OPTIONS,
+  createViewState,
+  getCollectionView,
+  getPlatformMeta,
+  parseTags
+} from "./view-model.js";
+
 const form = document.querySelector("#collectForm");
 const input = document.querySelector("#collectInput");
 const sampleButton = document.querySelector("#sampleButton");
@@ -22,6 +32,12 @@ const editSourceUrl = document.querySelector("#editSourceUrl");
 const clearConfirmModal = document.querySelector("#clearConfirmModal");
 const clearConfirmMessage = document.querySelector("#clearConfirmMessage");
 const clearConfirmSubmit = document.querySelector("#clearConfirmSubmit");
+const collectionSearch = document.querySelector("#collectionSearch");
+const platformFilter = document.querySelector("#platformFilter");
+const typeFilter = document.querySelector("#typeFilter");
+const tagFilter = document.querySelector("#tagFilter");
+const sortSelect = document.querySelector("#sortSelect");
+const clearViewButton = document.querySelector("#clearViewButton");
 
 const STORE_KEY = "opencollect:xhs:poc";
 const MIGRATION_KEY = "opencollect:xhs:poc:migrated:v1";
@@ -36,6 +52,7 @@ let resizeTimer = 0;
 let syncState = null;
 let isSyncing = false;
 let currentRevision = 0;
+let viewState = createViewState();
 const refreshingIds = new Set();
 const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("opencollect-sync") : null;
@@ -62,6 +79,30 @@ clearAllButton.addEventListener("click", openClearConfirm);
 syncPushButton.addEventListener("click", saveAndUpload);
 syncPullButton?.addEventListener("click", pullCloudVersion);
 syncForcePushButton?.addEventListener("click", () => saveAndUpload({ force: true }));
+collectionSearch?.addEventListener("input", () => {
+  viewState = createViewState({ ...viewState, query: collectionSearch.value });
+  render();
+});
+platformFilter?.addEventListener("change", () => {
+  viewState = createViewState({ ...viewState, platform: platformFilter.value });
+  render();
+});
+typeFilter?.addEventListener("change", () => {
+  viewState = createViewState({ ...viewState, type: typeFilter.value });
+  render();
+});
+tagFilter?.addEventListener("change", () => {
+  viewState = createViewState({ ...viewState, tag: tagFilter.value });
+  render();
+});
+sortSelect?.addEventListener("change", () => {
+  viewState = createViewState({ ...viewState, sort: sortSelect.value });
+  render();
+});
+clearViewButton?.addEventListener("click", () => {
+  viewState = createViewState();
+  render();
+});
 
 if (syncChannel) {
   syncChannel.addEventListener("message", (event) => {
@@ -182,6 +223,7 @@ async function collect(value) {
     upsertNote(payload.note);
     if (payload.duplicated) {
       activeId = payload.existingId || payload.note?.id || "";
+      viewState = createViewState();
       await refreshSyncState();
       render();
       focusCollectionCard(activeId);
@@ -358,14 +400,58 @@ async function saveEditor() {
 }
 
 function render() {
-  countBadge.textContent = String(notes.length);
+  const view = getCollectionView(notes, viewState);
+  countBadge.textContent = view.hasFilters ? `${view.visible}/${view.total}` : String(view.total);
+  countBadge.title = view.hasFilters ? `当前结果 ${view.visible} 条，全部收藏 ${view.total} 条` : `全部收藏 ${view.total} 条`;
   clearAllButton.hidden = notes.length === 0;
+  renderViewControls(view);
   renderSyncState();
-  renderList();
+  renderList(view);
   renderActiveNote();
 }
 
-function renderList() {
+function renderViewControls(view) {
+  if (collectionSearch && collectionSearch.value !== view.state.query) {
+    collectionSearch.value = view.state.query;
+  }
+
+  updateSelectOptions(
+    platformFilter,
+    [{ value: ALL_VALUE, label: "全部平台" }, ...view.platforms.map((platform) => ({ value: platform.key, label: platform.label }))],
+    view.state.platform
+  );
+  updateSelectOptions(typeFilter, TYPE_OPTIONS, view.state.type);
+  updateSelectOptions(tagFilter, [{ value: "", label: "全部标签" }, ...view.tags.map((tag) => ({ value: tag, label: `#${tag}` }))], view.state.tag);
+  updateSelectOptions(sortSelect, SORT_OPTIONS, view.state.sort);
+
+  if (clearViewButton) {
+    clearViewButton.hidden = !view.hasFilters && view.state.sort === "collected-desc";
+  }
+}
+
+function updateSelectOptions(select, options, selectedValue) {
+  if (!select) return;
+  const normalizedOptions = options.some((option) => option.value === selectedValue) || selectedValue === ""
+    ? options
+    : [...options, { value: selectedValue, label: `#${selectedValue}` }];
+  const nextHtml = normalizedOptions
+    .map((option) => `<option value="${escapeAttr(option.value)}">${escapeHtml(option.label)}</option>`)
+    .join("");
+  if (select.innerHTML !== nextHtml) {
+    select.innerHTML = nextHtml;
+  }
+  select.value = selectedValue;
+}
+
+function applyTagFilter(tag, options = {}) {
+  viewState = createViewState({ ...viewState, tag });
+  if (options.closeActive) {
+    activeId = "";
+  }
+  render();
+}
+
+function renderList(view = getCollectionView(notes, viewState)) {
   if (!notes.length) {
     list.classList.add("empty");
     list.style.removeProperty("--masonry-columns");
@@ -383,12 +469,29 @@ function renderList() {
     return;
   }
 
+  if (!view.items.length) {
+    list.classList.add("empty");
+    list.style.removeProperty("--masonry-columns");
+    list.innerHTML = `
+      <div class="feed-empty">
+        <span class="empty-cover" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+        <strong>没有匹配收藏</strong>
+        <small>调整搜索或筛选</small>
+      </div>
+    `;
+    return;
+  }
+
   list.classList.remove("empty");
   renderedColumnCount = getMasonryColumnCount();
   list.style.setProperty("--masonry-columns", String(renderedColumnCount));
   const columns = Array.from({ length: renderedColumnCount }, () => []);
 
-  notes.forEach((note, index) => {
+  view.items.forEach((note, index) => {
     columns[index % renderedColumnCount].push(renderCollectionCard(note, index));
   });
 
@@ -414,6 +517,10 @@ function renderList() {
 
   list.querySelectorAll('[data-action="refresh-note"]').forEach((button) => {
     button.addEventListener("click", () => refreshNote(button.dataset.id));
+  });
+
+  list.querySelectorAll('[data-action="filter-tag"]').forEach((button) => {
+    button.addEventListener("click", () => applyTagFilter(button.dataset.tag || ""));
   });
 }
 
@@ -447,12 +554,23 @@ function renderCollectionCard(note, index) {
           </span>
         </span>
       </button>
+      ${renderCardTags(note)}
       <span class="card-tools" aria-label="收藏操作">
         <button type="button" data-action="refresh-note" data-id="${escapeAttr(note.id)}" ${refreshingIds.has(note.id) ? "disabled" : ""}>${refreshingIds.has(note.id) ? "刷新中" : "刷新"}</button>
         <button type="button" data-action="edit-note" data-id="${escapeAttr(note.id)}">编辑</button>
         <button type="button" class="danger" data-action="delete-note" data-id="${escapeAttr(note.id)}">删除</button>
       </span>
     </article>
+  `;
+}
+
+function renderCardTags(note) {
+  const tags = (note.tags || []).slice(0, 3);
+  if (!tags.length) return "";
+  return `
+    <span class="card-tags" aria-label="标签">
+      ${tags.map((tag) => `<button type="button" data-action="filter-tag" data-tag="${escapeAttr(tag)}">#${escapeHtml(tag)}</button>`).join("")}
+    </span>
   `;
 }
 
@@ -513,7 +631,7 @@ function renderActiveNote() {
       <h2 id="noteDetailTitle">${escapeHtml(note.title || "无标题笔记")}</h2>
       <p>${formatContent(note.content)}</p>
       ${renderFetchNotice(note)}
-      ${note.tags?.length ? `<div class="tags">${note.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
+      ${note.tags?.length ? `<div class="tags">${note.tags.map((tag) => `<button type="button" data-action="filter-tag" data-tag="${escapeAttr(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div>` : ""}
     </div>
 
     <footer class="stats">
@@ -538,6 +656,10 @@ function renderActiveNote() {
 
   noteView.querySelector('[data-action="delete-active"]')?.addEventListener("click", () => {
     deleteNote(note.id);
+  });
+
+  noteView.querySelectorAll('[data-action="filter-tag"]').forEach((button) => {
+    button.addEventListener("click", () => applyTagFilter(button.dataset.tag || "", { closeActive: true }));
   });
 
   setupCarousel();
@@ -1224,57 +1346,6 @@ function loadLocalNotes() {
   } catch {
     return [];
   }
-}
-
-function parseTags(value) {
-  return value
-    .split(/[\s,，、]+/)
-    .map((tag) => tag.trim().replace(/^#/, "").replace(/\[话题\]$/, "").replace(/#$/, ""))
-    .filter(Boolean);
-}
-
-function getPlatformMeta(note) {
-  const key = normalizePlatformKey(note?.platform || inferPlatformFromUrl(note?.sourceUrl));
-  const platforms = {
-    xiaohongshu: { key: "xiaohongshu", label: "rednote" },
-    douyin: { key: "douyin", label: "抖音" },
-    bilibili: { key: "bilibili", label: "B站" },
-    youtube: { key: "youtube", label: "YouTube" },
-    instagram: { key: "instagram", label: "Instagram" },
-    tiktok: { key: "tiktok", label: "TikTok" },
-    wechat: { key: "wechat", label: "微信" }
-  };
-
-  return platforms[key] || { key: "unknown", label: "来源" };
-}
-
-function normalizePlatformKey(value) {
-  const text = String(value || "").toLowerCase();
-  if (["xiaohongshu", "xhs", "red", "rednote"].includes(text)) return "xiaohongshu";
-  if (["douyin", "抖音"].includes(text)) return "douyin";
-  if (["bilibili", "b站", "哔哩哔哩"].includes(text)) return "bilibili";
-  if (["youtube", "yt"].includes(text)) return "youtube";
-  if (["instagram", "ig"].includes(text)) return "instagram";
-  if (["tiktok"].includes(text)) return "tiktok";
-  if (["wechat", "weixin", "微信"].includes(text)) return "wechat";
-  return text.replace(/[^a-z0-9-]/g, "") || "xiaohongshu";
-}
-
-function inferPlatformFromUrl(value) {
-  try {
-    const hostname = new URL(value).hostname.toLowerCase();
-    if (hostname.includes("xiaohongshu.com") || hostname.includes("xhslink.com")) return "xiaohongshu";
-    if (hostname.includes("douyin.com")) return "douyin";
-    if (hostname.includes("bilibili.com") || hostname.includes("b23.tv")) return "bilibili";
-    if (hostname.includes("youtube.com") || hostname.includes("youtu.be")) return "youtube";
-    if (hostname.includes("instagram.com")) return "instagram";
-    if (hostname.includes("tiktok.com")) return "tiktok";
-    if (hostname.includes("weixin.qq.com") || hostname.includes("mp.weixin.qq.com")) return "wechat";
-  } catch {
-    return "xiaohongshu";
-  }
-
-  return "xiaohongshu";
 }
 
 function cloneValue(value) {

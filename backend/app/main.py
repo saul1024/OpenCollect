@@ -50,7 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def static_file(public_dir: Path, asset_path: str):
     clean = Path(asset_path or "index.html")
-    if clean.is_absolute() or ".." in clean.parts:
+    if clean.is_absolute() or ".." in clean.parts or any(part.startswith(".") for part in clean.parts):
         return JSONResponse(status_code=404, content={"error": "NOT_FOUND", "message": "页面不存在"})
 
     public_abs = public_dir.resolve()

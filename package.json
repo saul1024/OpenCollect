@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test:frontend": "node frontend-tests/view-model.test.mjs"
   },
   "engines": {
     "node": ">=18"

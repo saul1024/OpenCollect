@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCollect rednote PoC</title>
-    <link rel="stylesheet" href="/styles.css?v=20260601-p2-refresh" />
+    <link rel="stylesheet" href="/styles.css?v=20260602-p3" />
   </head>
   <body>
     <header class="app-header" aria-label="顶部导航">
@@ -54,6 +54,29 @@
             <button type="button" id="clearAllButton" class="feed-clear">清空收藏</button>
             <span id="countBadge">0</span>
           </div>
+        </div>
+        <div class="feed-controls" aria-label="搜索和筛选">
+          <label class="search-field" for="collectionSearch">
+            <span>搜索</span>
+            <input id="collectionSearch" type="search" autocomplete="off" placeholder="搜索收藏" />
+          </label>
+          <label class="filter-field" for="platformFilter">
+            <span>平台</span>
+            <select id="platformFilter"></select>
+          </label>
+          <label class="filter-field" for="typeFilter">
+            <span>类型</span>
+            <select id="typeFilter"></select>
+          </label>
+          <label class="filter-field" for="tagFilter">
+            <span>标签</span>
+            <select id="tagFilter"></select>
+          </label>
+          <label class="filter-field" for="sortSelect">
+            <span>排序</span>
+            <select id="sortSelect"></select>
+          </label>
+          <button type="button" id="clearViewButton" class="filter-clear" hidden>清除</button>
         </div>
         <div id="collectionList" class="collection-list"></div>
       </section>
@@ -112,6 +135,6 @@
     </div>
 
     <div id="toast" class="toast hidden" role="status"></div>
-    <script src="/app.js?v=20260601-p2-refresh" type="module"></script>
+    <script src="/app.js?v=20260602-p3" type="module"></script>
   </body>
 </html>

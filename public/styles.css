@@ -32,7 +32,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -264,6 +265,70 @@ textarea::placeholder {
   align-items: center;
   gap: 10px;
   flex: 0 0 auto;
+}
+
+.feed-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(132px, auto)) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 18px;
+  padding: 0 4px;
+}
+
+.search-field,
+.filter-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.search-field span,
+.filter-field span {
+  color: #656b76;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 800;
+}
+
+.search-field input,
+.filter-field select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #dfe2e7;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: #25262b;
+  padding: 0 10px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 700;
+}
+
+.search-field input:focus,
+.filter-field select:focus {
+  border-color: rgba(255, 36, 66, 0.42);
+  box-shadow: 0 0 0 3px rgba(255, 36, 66, 0.1);
+}
+
+.filter-clear {
+  min-height: 36px;
+  border: 1px solid #dfe2e7;
+  border-radius: 8px;
+  background: #fff;
+  color: #656b76;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.filter-clear:hover {
+  border-color: rgba(255, 36, 66, 0.3);
+  color: var(--red);
+  background: var(--surface-warm);
 }
 
 .sync-panel {
@@ -563,6 +628,33 @@ textarea::placeholder {
   display: grid;
   gap: 10px;
   padding: 10px 10px 12px;
+}
+
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 12px;
+}
+
+.card-tags button {
+  max-width: 100%;
+  min-height: 24px;
+  border: 0;
+  border-radius: 8px;
+  background: #f4f8ff;
+  color: #0b63c7;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 800;
+}
+
+.card-tags button:hover {
+  background: #e8f1ff;
 }
 
 .card-title {
@@ -1074,7 +1166,7 @@ textarea::placeholder {
 }
 
 .topic,
-.tags span {
+.tags button {
   color: #0b63c7;
   font-weight: 700;
 }
@@ -1085,14 +1177,19 @@ textarea::placeholder {
   gap: 8px;
 }
 
-.tags span {
+.tags button {
   max-width: 100%;
+  border: 0;
   overflow-wrap: anywhere;
   border-radius: 8px;
   background: #f4f8ff;
   padding: 6px 9px;
   font-size: 13px;
   line-height: 18px;
+}
+
+.tags button:hover {
+  background: #e8f1ff;
 }
 
 .stats {
@@ -1311,6 +1408,10 @@ body.modal-open {
   .collect-form {
     width: 100%;
   }
+
+  .feed-controls {
+    grid-template-columns: minmax(220px, 1fr) repeat(2, minmax(132px, 180px)) auto;
+  }
 }
 
 @media (max-width: 920px) {
@@ -1327,6 +1428,10 @@ body.modal-open {
 
   .page-shell {
     padding: 18px 16px 36px;
+  }
+
+  .feed-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .note-backdrop {
@@ -1387,6 +1492,11 @@ body.modal-open {
   .feed-toolbar {
     flex-direction: column-reverse;
     align-items: flex-end;
+  }
+
+  .feed-controls {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .sync-panel {

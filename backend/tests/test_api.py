@@ -25,6 +25,10 @@ def test_collections_api_matches_frontend_contract(tmp_path: Path):
         response = client.get("/")
         assert response.status_code == 200
 
+        (public_dir / ".env").write_text("COS_SECRET_KEY=secret", encoding="utf-8")
+        response = client.get("/.env")
+        assert response.status_code == 404
+
         response = client.get("/api/collections")
         assert response.status_code == 200
         assert response.json() == {"collections": [], "revision": 0, "updatedAt": ""}
@@ -273,6 +277,36 @@ def test_sync_pull_api_backs_up_and_reloads_store(tmp_path: Path):
         assert Path(payload["sync"]["local_backup_path"]).is_file()
         assert payload["revision"] == 2
         assert {item["id"] for item in payload["collections"]} == {"base-note", "remote-note"}
+
+
+def test_patch_tags_marks_sync_dirty(tmp_path: Path):
+    syncer = FakeSyncer(remote=None)
+    settings = sync_api_settings(tmp_path)
+    manager = SyncManager(settings, syncer=syncer)
+    manager.bootstrap_local_file(settings.collections_path)
+    store = JSONStore(settings.collections_path, on_write=manager.after_local_write)
+    app = FastAPI()
+    app.include_router(create_api_router(store, QueueParser(), DummyMediaProxy(), manager))
+
+    with TestClient(app) as client:
+        response = client.post("/api/collections/import-local", json={"collections": [api_collection("tag-note").model_dump(by_alias=True)]})
+        assert response.status_code == 200
+        response = client.post("/api/sync/push")
+        assert response.status_code == 200
+        assert response.json()["sync"]["dirty"] is False
+        base_revision = client.get("/api/collections").json()["revision"]
+
+        response = client.patch(
+            "/api/collections/tag-note",
+            json={"tags": ["#美食", "美食", "甜品[话题]"], "baseRevision": base_revision},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["collection"]["tags"] == ["美食", "甜品"]
+        status = client.get("/api/sync/status").json()
+        assert status["dirty"] is True
+        assert status["pending_revision"] == payload["revision"]
 
 
 def api_app(tmp_path: Path, parser) -> FastAPI:
