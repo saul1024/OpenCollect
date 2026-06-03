@@ -24,6 +24,7 @@ const syncForcePushButton = document.querySelector("#syncForcePushButton");
 const exportJsonButton = document.querySelector("#exportJsonButton");
 const importJsonButton = document.querySelector("#importJsonButton");
 const importJsonInput = document.querySelector("#importJsonInput");
+const logoutButton = document.querySelector("#logoutButton");
 const list = document.querySelector("#collectionList");
 const noteModal = document.querySelector("#noteModal");
 const noteView = document.querySelector("#noteView");
@@ -65,6 +66,7 @@ let resizeTimer = 0;
 let syncState = null;
 let isSyncing = false;
 let batchImport = null;
+let authState = { authEnabled: false, authenticated: true };
 let currentRevision = 0;
 let viewState = createViewState();
 let openCardMenuId = "";
@@ -102,6 +104,7 @@ syncForcePushButton?.addEventListener("click", () => saveAndUpload({ force: true
 exportJsonButton?.addEventListener("click", exportCollectionsJson);
 importJsonButton?.addEventListener("click", () => importJsonInput?.click());
 importJsonInput?.addEventListener("change", importCollectionsJsonFile);
+logoutButton?.addEventListener("click", logout);
 collectionSearch?.addEventListener("input", () => {
   viewState = createViewState({ ...viewState, query: collectionSearch.value });
   render();
@@ -205,6 +208,7 @@ document.addEventListener("keydown", (event) => {
 
 async function initialize() {
   try {
+    await loadAuthSession();
     await loadRemoteNotes();
     await refreshSyncState();
     await migrateLocalNotes();
@@ -224,9 +228,7 @@ async function initialize() {
 async function loadSample(button, endpoint, idleLabel, fallbackMessage) {
   setBusy(button, true, "加载");
   try {
-    const response = await fetch(endpoint);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || fallbackMessage);
+    const payload = await requestJson(endpoint);
     input.value = payload.input;
     await collect(payload.input);
   } catch (error) {
@@ -626,11 +628,17 @@ function render() {
   countBadge.textContent = view.hasFilters ? `${view.visible}/${view.total}` : String(view.total);
   countBadge.title = view.hasFilters ? `当前结果 ${view.visible} 条，全部收藏 ${view.total} 条` : `全部收藏 ${view.total} 条`;
   clearAllButton.hidden = notes.length === 0;
+  renderAuthState();
   renderViewControls(view);
   renderSyncState();
   renderBatchImport();
   renderList(view);
   renderActiveNote();
+}
+
+function renderAuthState() {
+  if (!logoutButton) return;
+  logoutButton.hidden = !authState?.authEnabled;
 }
 
 function renderViewControls(view) {
@@ -1502,6 +1510,19 @@ async function loadRemoteNotes() {
   return notes;
 }
 
+async function loadAuthSession() {
+  try {
+    authState = await requestJson("/api/auth/session");
+    if (authState?.authEnabled && !authState.authenticated) {
+      redirectToLogin();
+    }
+  } catch (error) {
+    if (error?.payload?.error === "UNAUTHORIZED") return;
+    authState = { authEnabled: false, authenticated: true };
+  }
+  return authState;
+}
+
 async function refreshSyncState() {
   try {
     syncState = await requestJson("/api/sync/status");
@@ -1509,6 +1530,16 @@ async function refreshSyncState() {
     syncState = { enabled: false, status: "unavailable" };
   }
   return syncState;
+}
+
+async function logout() {
+  try {
+    await requestJson("/api/auth/logout", { method: "POST" });
+  } catch {
+    // Continue to the login page even if the cookie was already invalid.
+  } finally {
+    redirectToLogin("/");
+  }
 }
 
 async function saveAndUpload(options = {}) {
@@ -1756,9 +1787,17 @@ async function requestJson(url, options = {}) {
     const error = new Error(payload.message || "请求失败");
     error.payload = payload;
     error.reason = payload.reason || payload.error || "";
+    if (response.status === 401) {
+      redirectToLogin();
+    }
     throw error;
   }
   return payload;
+}
+
+function redirectToLogin(next = `${window.location.pathname}${window.location.search}`) {
+  const target = next && next.startsWith("/") ? next : "/";
+  window.location.assign(`/login?next=${encodeURIComponent(target)}`);
 }
 
 function focusCollectionCard(id) {

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.app.auth import AuthManager, session_payload
 from backend.app.media.proxy import MediaProxy, MediaProxyError
 from backend.app.store.json_store import CollectionConflict, CollectionNotFound, JSONStore, RevisionConflict, StoreError
 from backend.app.store.models import Collection, CollectionPatch, DataFile, model_to_api
@@ -33,13 +34,50 @@ class SyncPushRequest(BaseModel):
     force: bool = False
 
 
+class LoginRequest(BaseModel):
+    password: str = ""
+
+
 def create_api_router(
     store: JSONStore,
     parser: XHSParser,
     media_proxy: MediaProxy,
     sync_manager: SyncManager | None = None,
+    auth_manager: AuthManager | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api")
+
+    @router.post("/auth/login")
+    async def auth_login(request: LoginRequest):
+        if auth_manager is None or not auth_manager.enabled:
+            return {"authenticated": True, "authEnabled": False, "user": "owner"}
+        if not auth_manager.verify_password(request.password):
+            return error_response(401, "AUTH_FAILED", "口令错误")
+        token = auth_manager.create_session_token()
+        response = JSONResponse(content={"authenticated": True, "authEnabled": True, "user": "owner"})
+        response.set_cookie(
+            auth_manager.cookie_name,
+            token,
+            max_age=auth_manager.auth.session_ttl_seconds,
+            httponly=True,
+            secure=auth_manager.cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @router.post("/auth/logout")
+    async def auth_logout():
+        response = JSONResponse(content={"authenticated": False, "authEnabled": bool(auth_manager and auth_manager.enabled), "user": ""})
+        if auth_manager is not None:
+            response.delete_cookie(auth_manager.cookie_name, path="/", secure=auth_manager.cookie_secure, samesite="lax")
+        return response
+
+    @router.get("/auth/session")
+    async def auth_session(request: Request):
+        if auth_manager is None:
+            return {"authenticated": True, "authEnabled": False, "user": "owner"}
+        return session_payload(auth_manager, request.cookies.get(auth_manager.cookie_name, ""))
 
     @router.get("/collections")
     async def list_collections():

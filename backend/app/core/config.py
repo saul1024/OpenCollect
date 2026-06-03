@@ -46,6 +46,27 @@ def env_bool(*names: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(*names: str, default: int) -> int:
+    raw = env_first(*names, default=str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+class SettingsError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    enabled: bool = False
+    password_hash: str = ""
+    session_secret: str = ""
+    session_ttl_seconds: int = 604800
+    cookie_name: str = "opencollect_session"
+
+
 @dataclass(frozen=True)
 class SyncSettings:
     provider: str = "none"
@@ -70,6 +91,8 @@ class Settings:
     port: str
     data_dir: Path
     public_dir: Path
+    app_env: str = "development"
+    auth: AuthSettings = AuthSettings()
     sync: SyncSettings = SyncSettings()
 
     @property
@@ -91,6 +114,8 @@ class Settings:
 
 def load_settings() -> Settings:
     load_dotenv()
+    app_env = env_first("APP_ENV", default="development").strip().lower() or "development"
+    auth_enabled = env_bool("AUTH_ENABLED", default=app_env == "production")
     provider = env_first("SYNC_PROVIDER", default="none").strip().lower()
     if provider in {"", "off", "false", "disabled"}:
         provider = "none"
@@ -100,10 +125,17 @@ def load_settings() -> Settings:
     def sync_env(name: str, default: str = "") -> str:
         return env_first(*(f"{prefix}_{name}" for prefix in first), default=default)
 
-    return Settings(
+    settings = Settings(
         port=os.getenv("PORT", "3000"),
         data_dir=Path(os.getenv("DATA_DIR", "./data")),
         public_dir=Path(os.getenv("PUBLIC_DIR", "./public")),
+        app_env=app_env,
+        auth=AuthSettings(
+            enabled=auth_enabled,
+            password_hash=env_first("AUTH_PASSWORD_HASH"),
+            session_secret=env_first("AUTH_SESSION_SECRET"),
+            session_ttl_seconds=env_int("AUTH_SESSION_TTL_SECONDS", default=604800),
+        ),
         sync=SyncSettings(
             provider=provider,
             endpoint=sync_env("ENDPOINT"),
@@ -122,3 +154,16 @@ def load_settings() -> Settings:
             timeout_seconds=float(env_first("SYNC_TIMEOUT_SECONDS", default="15")),
         ),
     )
+    validate_settings(settings)
+    return settings
+
+
+def validate_settings(settings: Settings) -> None:
+    if settings.app_env == "production" and not settings.auth.enabled:
+        raise SettingsError("AUTH_ENABLED=true is required in production")
+    if settings.app_env != "production" and not settings.auth.enabled:
+        return
+    if not settings.auth.password_hash:
+        raise SettingsError("AUTH_PASSWORD_HASH is required when auth is enabled")
+    if len(settings.auth.session_secret) < 32:
+        raise SettingsError("AUTH_SESSION_SECRET must be at least 32 characters when auth is enabled")

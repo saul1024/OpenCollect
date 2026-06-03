@@ -23,6 +23,59 @@
 - ...
 ```
 
+## 2026-06-03 - P6.0 访问保护和生产配置
+
+任务：
+- `OC-P6-001`
+- `OC-P6-002`
+- `OC-P6-003`
+- `OC-P6-006`
+
+完成：
+- 新增单用户访问口令登录，支持 `AUTH_PASSWORD_HASH` 校验。
+- 新增 HMAC 签名 session token，登录后写入 httpOnly cookie，退出时清除 cookie。
+- 新增 `/login` 登录页，以及 `/api/auth/login`、`/api/auth/logout`、`/api/auth/session`。
+- 新增 auth middleware：`AUTH_ENABLED=true` 时未登录访问主页面跳转 `/login`，未登录访问 API 返回 `401 UNAUTHORIZED`。
+- 保护收藏列表、收藏写入、编辑、删除、清空、JSON 导入导出、sync API、媒体代理等既有 API。
+- 主应用新增“退出”按钮；前端请求收到 `401` 时跳转登录页。
+- 新增生产配置校验：`APP_ENV=production` 时必须启用 auth，且必须提供 `AUTH_PASSWORD_HASH` 和长度足够的 `AUTH_SESSION_SECRET`。
+- 开发环境仍可用 `AUTH_ENABLED=false` 直接使用，避免本机默认启动被锁住。
+- 输出验收截图：`outputs/p6/p6-auth-login.png`、`outputs/p6/p6-auth-app.png`。
+
+验证：
+- `uv run pytest backend/tests/test_auth.py backend/tests/test_api.py`
+- Chrome headless 本机 auth-enabled 服务冒烟：未登录 `/` 跳 `/login?next=/`；未登录 `/api/collections` 返回 `401`；错误口令显示“口令错误”；正确口令登录后进入收藏页；刷新后仍保持登录；退出后回到 `/login` 且 API 返回 `401`。
+
+遗留问题：
+- 本机已通过响应头检查覆盖生产 cookie `Secure` 标记，但真实 HTTPS、反向代理和公网域名下的 cookie 行为仍需要部署后验收。
+- P6.1 的媒体代理 host allowlist、API 限流和 `/api/health` 尚未开始。
+
+下一步：
+- 进入 `P6.1`：`OC-P6-004`、`OC-P6-005`、`OC-P6-007`。
+
+## 2026-06-03 - P6 上线底座推进计划
+
+任务：
+- P6 工作项梳理
+
+完成：
+- 新增 `docs/P6_LAUNCH_PLAN.md`，把 P6 拆成 P6.0 到 P6.3 四个阶段。
+- 明确 P6 第一阶段目标：先做可安全上线的单用户版本，不直接展开完整多用户账号系统。
+- 固化每轮推进节奏：选定任务 ID、补测试或冒烟、实现、验证、更新文档和日志。
+- 把 P6.0 定义为下一轮优先执行范围：访问口令登录、签名 session、保护页面/API、生产配置校验。
+- 把媒体代理防滥用、限流、健康检查、部署文档、日志、备份恢复和数据隔离预研分别放入后续轮次。
+- 更新 `docs/ROADMAP.md`，把 P6 状态调整为 `Next`，并同步新的任务 ID 和轮次。
+
+验证：
+- 文档结构检查：`docs/P6_LAUNCH_PLAN.md` 已覆盖目标、阶段节奏、工作项、验收标准、测试要求和下一轮推荐范围。
+- 路线图检查：`docs/ROADMAP.md` 中 P6 拆解与 P6 计划文档一致。
+
+遗留问题：
+- 这次只落地计划文档，尚未开始 P6.0 的认证和生产配置实现。
+
+下一步：
+- 执行 `P6.0`：`OC-P6-001`、`OC-P6-002`、`OC-P6-003`、`OC-P6-006`。
+
 ## 2026-06-02 - P5 第二轮重试和 JSON 导入导出
 
 任务：
