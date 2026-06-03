@@ -23,6 +23,44 @@
 - ...
 ```
 
+## 2026-06-03 - P6.1 API 安全基线
+
+任务：
+- `OC-P6-004`
+- `OC-P6-005`
+- `OC-P6-007`
+- `OC-P6-015`
+
+完成：
+- 将 P6.1 从“媒体 host allowlist”调整为 API 安全基线，并同步更新 `docs/ROADMAP.md` 和 `docs/P6_LAUNCH_PLAN.md`。
+- 新增进程内限流模块，覆盖公开入口轻量限流、登录请求限流、登录失败冷却、收藏解析、JSON 导入和媒体代理。
+- 登录成功后新增签名 CSRF token cookie；后端对已登录写请求校验 `X-CSRF-Token`，前端统一请求层自动携带 token。
+- 新增 `/api/health`，只返回服务状态、auth 是否启用、sync provider 和数据文件读写状态。
+- 媒体代理不再接受任意 `url=` 参数；新路径按收藏 ID 和媒体下标访问收藏数据中的图片/视频，头像和视频封面也从收藏数据解析。
+- 媒体代理新增 SSRF 防护：拒绝非 `http/https`、localhost、内网 IP、metadata IP、异常重定向、超大小和异常 content-type。
+- 更新前端媒体 URL 生成逻辑，不再把原始媒体 URL 传给后端；更新 `app.js` cache-busting 版本。
+
+验证：
+- `uv run pytest`
+- `npm run test:frontend`
+- `node --check public/app.js && node --check public/view-model.js && node --check public/request-security.js && node --check frontend-tests/view-model.test.mjs`
+- `uv run python -m compileall backend/app backend/tests`
+- `git diff --check`
+- 前端单元测试覆盖写请求自动从 cookie 读取 CSRF token 并追加 `X-CSRF-Token`。
+- 本机 HTTP 冒烟：未登录 `/` 跳 `/login?next=/`；未登录 `/api/collections` 返回 `401`；`/api/health` 不含敏感字段；错误口令返回 `401`；正确口令登录后 CSRF cookie 存在；已登录 `/api/collections` 返回 `200`；旧 `/api/image?url=...` 返回 `403`；已登录 logout 缺 CSRF 返回 `403`；带 CSRF logout 返回 `200`；退出后 `/api/collections` 返回 `401`。
+- 当前运行服务写接口检查：登录后调用 `/api/collections/import-local`，不带 CSRF 返回 `403`，带正确 `X-CSRF-Token` 返回 `200`。
+- 页面服务检查：`/login` 包含登录表单和 `/api/auth/login`；登录后 `/` 包含 `logoutButton`、`collectionList` 和 `app.js?v=20260603-p61-security`。
+- Headless Chrome 临时 profile 验收：访问 `/` 跳 `/login?next=/`；输入口令 `secret` 后进入 `/`；主应用 `collectionList` 和可见 `logoutButton` 就绪；点击退出后回到 `/login?next=%2F`。
+- 输出验收截图：`outputs/p6/p61-authenticated-app.png`、`outputs/p6/p61-logout-login.png`。
+
+遗留问题：
+- Chrome/Safari 的 Apple Events JavaScript 权限默认关闭，未使用用户浏览器自动化；已改用独立 headless Chrome 临时 profile 完成浏览器验收。
+- 真实 HTTPS、反向代理和公网域名下的 cookie 行为仍需部署后验收。
+- 当前限流为进程内实现，多实例部署时需要在 P6.2/P7 再评估 Redis 或网关限流。
+
+下一步：
+- 进入 `P6.2`：`OC-P6-008`、`OC-P6-009`、`OC-P6-010`、`OC-P6-011`。
+
 ## 2026-06-03 - P6.0 访问保护和生产配置
 
 任务：

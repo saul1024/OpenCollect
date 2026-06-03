@@ -11,6 +11,7 @@ import {
   normalizeImportDataFile,
   sortNotes
 } from "../public/view-model.js";
+import { readCookie, withRequestSecurity } from "../public/request-security.js";
 
 const notes = [
   note({
@@ -133,6 +134,17 @@ https://www.xiaohongshu.com/explore/note-2?xsec_token=abc. 普通文案 https://
   const view = getCollectionView(notes, createViewState({ query: "" }));
   assert.equal(view.visible, 3);
   assert.equal(view.hasFilters, false);
+}
+
+assert.equal(readCookie("opencollect_csrf", "a=1; opencollect_csrf=signed-token; b=2"), "signed-token");
+assert.equal(withRequestSecurity({ method: "GET" }, "opencollect_csrf=signed-token").headers, undefined);
+{
+  const options = withRequestSecurity(
+    { method: "POST", headers: { "content-type": "application/json" } },
+    "a=1; opencollect_csrf=signed-token"
+  );
+  assert.equal(options.headers.get("X-CSRF-Token"), "signed-token");
+  assert.equal(options.headers.get("content-type"), "application/json");
 }
 
 function note(overrides) {

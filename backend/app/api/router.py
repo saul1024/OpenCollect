@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.app.auth import AuthManager, session_payload
 from backend.app.media.proxy import MediaProxy, MediaProxyError
+from backend.app.rate_limit import RateLimitExceeded, RateLimiter
 from backend.app.store.json_store import CollectionConflict, CollectionNotFound, JSONStore, RevisionConflict, StoreError
 from backend.app.store.models import Collection, CollectionPatch, DataFile, model_to_api
 from backend.app.sync import SyncManager
@@ -44,22 +47,47 @@ def create_api_router(
     media_proxy: MediaProxy,
     sync_manager: SyncManager | None = None,
     auth_manager: AuthManager | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api")
 
     @router.post("/auth/login")
-    async def auth_login(request: LoginRequest):
+    async def auth_login(login: LoginRequest, request: Request):
         if auth_manager is None or not auth_manager.enabled:
             return {"authenticated": True, "authEnabled": False, "user": "owner"}
-        if not auth_manager.verify_password(request.password):
+        client_key = rate_limiter.client_key(request) if rate_limiter is not None else ""
+        if rate_limiter is not None:
+            try:
+                rate_limiter.check("auth_login", client_key)
+                rate_limiter.check_login_allowed(client_key)
+            except RateLimitExceeded as exc:
+                return rate_limit_response(exc.retry_after)
+        if not auth_manager.verify_password(login.password):
+            if rate_limiter is not None:
+                try:
+                    rate_limiter.record_login_failure(client_key)
+                except RateLimitExceeded as exc:
+                    return rate_limit_response(exc.retry_after)
             return error_response(401, "AUTH_FAILED", "口令错误")
+        if rate_limiter is not None:
+            rate_limiter.record_login_success(client_key)
         token = auth_manager.create_session_token()
+        csrf_token = auth_manager.create_csrf_token(token)
         response = JSONResponse(content={"authenticated": True, "authEnabled": True, "user": "owner"})
         response.set_cookie(
             auth_manager.cookie_name,
             token,
             max_age=auth_manager.auth.session_ttl_seconds,
             httponly=True,
+            secure=auth_manager.cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+        response.set_cookie(
+            auth_manager.csrf_cookie_name,
+            csrf_token,
+            max_age=auth_manager.auth.session_ttl_seconds,
+            httponly=False,
             secure=auth_manager.cookie_secure,
             samesite="lax",
             path="/",
@@ -71,6 +99,7 @@ def create_api_router(
         response = JSONResponse(content={"authenticated": False, "authEnabled": bool(auth_manager and auth_manager.enabled), "user": ""})
         if auth_manager is not None:
             response.delete_cookie(auth_manager.cookie_name, path="/", secure=auth_manager.cookie_secure, samesite="lax")
+            response.delete_cookie(auth_manager.csrf_cookie_name, path="/", secure=auth_manager.cookie_secure, samesite="lax")
         return response
 
     @router.get("/auth/session")
@@ -78,6 +107,10 @@ def create_api_router(
         if auth_manager is None:
             return {"authenticated": True, "authEnabled": False, "user": "owner"}
         return session_payload(auth_manager, request.cookies.get(auth_manager.cookie_name, ""))
+
+    @router.get("/health")
+    async def health():
+        return health_payload(store, auth_manager, sync_manager)
 
     @router.get("/collections")
     async def list_collections():
@@ -265,16 +298,43 @@ def create_api_router(
         }
 
     @router.get("/image")
-    async def image(url: str = ""):
+    async def image():
+        return error_response(403, "FORBIDDEN", "媒体代理不接受任意 URL")
+
+    @router.get("/media")
+    async def media():
+        return error_response(403, "FORBIDDEN", "媒体代理不接受任意 URL")
+
+    @router.get("/media/collections/{collection_id}/items/{media_index}")
+    async def collection_media_item(request: Request, collection_id: str, media_index: int, type: str = "image"):
+        collection = store.get(collection_id)
+        if collection is None:
+            return error_response(404, "NOT_FOUND", "收藏不存在")
         try:
-            return await media_proxy.image(url)
+            resource = collection_media_url(collection, media_index, type)
+            if resource.kind == "video":
+                return await media_proxy.video(request, resource.url)
+            return await media_proxy.image(resource.url)
         except MediaProxyError as exc:
             return error_response(422, "MEDIA_FAILED", str(exc))
 
-    @router.get("/media")
-    async def media(request: Request, url: str = ""):
+    @router.get("/media/collections/{collection_id}/avatar")
+    async def collection_author_avatar(collection_id: str):
+        collection = store.get(collection_id)
+        if collection is None:
+            return error_response(404, "NOT_FOUND", "收藏不存在")
         try:
-            return await media_proxy.video(request, url)
+            return await media_proxy.image(collection_author_avatar_url(collection))
+        except MediaProxyError as exc:
+            return error_response(422, "MEDIA_FAILED", str(exc))
+
+    @router.get("/media/collections/{collection_id}/poster")
+    async def collection_video_poster(collection_id: str):
+        collection = store.get(collection_id)
+        if collection is None:
+            return error_response(404, "NOT_FOUND", "收藏不存在")
+        try:
+            return await media_proxy.image(collection_video_poster_url(collection))
         except MediaProxyError as exc:
             return error_response(422, "MEDIA_FAILED", str(exc))
 
@@ -293,8 +353,101 @@ def data_file_payload(snapshot: DataFile) -> dict:
     return model_to_api(snapshot)
 
 
+class MediaResource(BaseModel):
+    kind: str
+    url: str
+
+
+def collection_media_url(collection: Collection, media_index: int, media_type: str) -> MediaResource:
+    kind = (media_type or "image").strip().lower()
+    if media_index < 0:
+        raise MediaProxyError("媒体不存在")
+    if kind == "image":
+        if media_index >= len(collection.images):
+            raise MediaProxyError("媒体不存在")
+        url = collection.images[media_index].url
+        if not url:
+            raise MediaProxyError("媒体不存在")
+        return MediaResource(kind="image", url=url)
+    if kind == "video":
+        urls = video_urls(collection)
+        if media_index >= len(urls):
+            raise MediaProxyError("媒体不存在")
+        return MediaResource(kind="video", url=urls[media_index])
+    raise MediaProxyError("不支持的媒体类型")
+
+
+def collection_author_avatar_url(collection: Collection) -> str:
+    url = collection.author.avatar
+    if not url:
+        raise MediaProxyError("媒体不存在")
+    return url
+
+
+def collection_video_poster_url(collection: Collection) -> str:
+    if collection.video and collection.video.poster:
+        return collection.video.poster
+    if collection.images:
+        return collection.images[0].url
+    raise MediaProxyError("媒体不存在")
+
+
+def video_urls(collection: Collection) -> list[str]:
+    if collection.video is None:
+        return []
+    urls: list[str] = []
+    if collection.video.url:
+        urls.append(collection.video.url)
+    for stream in collection.video.streams:
+        if stream.url:
+            urls.append(stream.url)
+        urls.extend(url for url in stream.backup_urls if url)
+    return unique_values(urls)
+
+
+def unique_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def health_payload(store: JSONStore, auth_manager: AuthManager | None, sync_manager: SyncManager | None) -> dict:
+    data_file_readable = store.path.is_file() and os.access(store.path, os.R_OK)
+    data_file_writable = os.access(store.path, os.W_OK) if store.path.exists() else os.access(store.path.parent, os.W_OK)
+    if sync_manager is None:
+        sync_provider = "none"
+        sync_enabled = False
+    else:
+        sync_status = sync_manager.status_payload()
+        sync_provider = sync_status.get("provider", "none")
+        sync_enabled = bool(sync_status.get("enabled", False))
+    return {
+        "status": "ok",
+        "authEnabled": bool(auth_manager and auth_manager.enabled),
+        "sync": {
+            "provider": sync_provider,
+            "enabled": sync_enabled,
+        },
+        "dataFile": {
+            "readable": data_file_readable,
+            "writable": data_file_writable,
+        },
+    }
+
+
 def error_response(status: int, code: str, message: str, **extra) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "message": message, **extra})
+
+
+def rate_limit_response(retry_after: int) -> JSONResponse:
+    response = error_response(429, "RATE_LIMITED", "请求过于频繁，请稍后重试", retryAfter=retry_after)
+    response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 def parser_error_response(exc: ParserError) -> JSONResponse:

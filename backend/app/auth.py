@@ -41,6 +41,10 @@ class AuthManager:
         return self.auth.cookie_name
 
     @property
+    def csrf_cookie_name(self) -> str:
+        return self.auth.csrf_cookie_name
+
+    @property
     def cookie_secure(self) -> bool:
         return self.settings.app_env == "production"
 
@@ -60,6 +64,23 @@ class AuthManager:
         encoded_payload = base64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
         signature = self._sign(encoded_payload.encode("ascii"))
         return f"{encoded_payload}.{signature}"
+
+    def create_csrf_token(self, session_token: str) -> str:
+        nonce = secrets.token_urlsafe(24)
+        signature = self._sign_csrf(session_token, nonce)
+        return f"{nonce}.{signature}"
+
+    def verify_csrf_token(self, session_token: str, csrf_token: str) -> None:
+        if not self.enabled:
+            return
+        if not session_token or not csrf_token or "." not in csrf_token:
+            raise AuthError("missing csrf token")
+        nonce, signature = csrf_token.split(".", 1)
+        if not nonce or not signature:
+            raise AuthError("invalid csrf token")
+        expected = self._sign_csrf(session_token, nonce)
+        if not hmac.compare_digest(signature, expected):
+            raise AuthError("invalid csrf signature")
 
     def verify_session_token(self, token: str, now: int | None = None) -> Session:
         if not self.enabled:
@@ -91,6 +112,9 @@ class AuthManager:
     def _sign(self, value: bytes) -> str:
         digest = hmac.new(self.auth.session_secret.encode("utf-8"), value, hashlib.sha256).digest()
         return base64url_encode(digest)
+
+    def _sign_csrf(self, session_token: str, nonce: str) -> str:
+        return self._sign(f"csrf:{session_token}:{nonce}".encode("utf-8"))
 
 
 def hash_password(password: str, salt: str | None = None, iterations: int = PASSWORD_ITERATIONS) -> str:

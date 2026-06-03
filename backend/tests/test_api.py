@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from backend.app.api.router import create_api_router
 from backend.app.core.config import Settings, SyncSettings
 from backend.app.main import create_app
+from backend.app.media.proxy import MediaProxyError, get_with_safe_redirects, validate_asset_url
 from backend.app.store.json_store import JSONStore
-from backend.app.store.models import Author, Collection, DataFile, Image, Stats, model_to_api
+from backend.app.store.models import Author, Collection, DataFile, Image, Stats, Video, VideoStream, model_to_api
 from backend.app.sync.manager import SyncManager
 from backend.app.xhs.parser import ParserError
 
@@ -409,15 +413,120 @@ def test_import_json_marks_sync_dirty(tmp_path: Path):
         assert not syncer.pushes
 
 
-def api_app(tmp_path: Path, parser) -> FastAPI:
+def test_health_api_returns_minimal_status_without_secrets(tmp_path: Path):
+    store = JSONStore(tmp_path / "collections.json")
+    app = FastAPI()
+    app.include_router(create_api_router(store, QueueParser(), DummyMediaProxy(), FakeStatusSyncManager()))
+
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "status": "ok",
+        "authEnabled": False,
+        "sync": {"provider": "cos", "enabled": True},
+        "dataFile": {"readable": True, "writable": True},
+    }
+    raw = json.dumps(payload, ensure_ascii=False).lower()
+    for sensitive in ["secret", "key", "bucket", "cookie", "password", str(tmp_path).lower()]:
+        assert sensitive not in raw
+
+
+def test_media_proxy_uses_collection_resource_instead_of_arbitrary_url(tmp_path: Path):
+    media_proxy = RecordingMediaProxy()
+    with TestClient(api_app(tmp_path, QueueParser(), media_proxy=media_proxy)) as client:
+        client.post("/api/collections/import-local", json={"collections": [api_collection("note-1").model_dump(by_alias=True)]})
+
+        old_image = client.get("/api/image?url=https%3A%2F%2Fexample.com%2Fa.jpg")
+        assert old_image.status_code == 403
+        assert old_image.json()["error"] == "FORBIDDEN"
+
+        old_media = client.get("/api/media?url=https%3A%2F%2Fexample.com%2Fa.mp4")
+        assert old_media.status_code == 403
+        assert old_media.json()["error"] == "FORBIDDEN"
+
+        image = client.get("/api/media/collections/note-1/items/0?type=image")
+        assert image.status_code == 200
+        assert image.json() == {"kind": "image", "url": "https://sns-webpic-qc.xhscdn.com/note-1.jpg"}
+
+        missing = client.get("/api/media/collections/note-1/items/9?type=image")
+        assert missing.status_code == 422
+        assert missing.json()["error"] == "MEDIA_FAILED"
+
+
+def test_media_proxy_can_resolve_video_items_from_collection(tmp_path: Path):
+    media_proxy = RecordingMediaProxy()
+    collection = api_collection("video-1")
+    collection.type = "video"
+    collection.video = Video(
+        url="https://sns-video-bd.xhscdn.com/video-1.mp4",
+        streams=[
+            VideoStream(
+                url="https://sns-video-hw.xhscdn.com/video-1.mp4",
+                backupUrls=["https://sns-video-bd.xhscdn.com/video-1-backup.mp4"],
+            )
+        ],
+    )
+
+    with TestClient(api_app(tmp_path, QueueParser(), media_proxy=media_proxy)) as client:
+        client.post("/api/collections/import-local", json={"collections": [collection.model_dump(by_alias=True)]})
+
+        response = client.get("/api/media/collections/video-1/items/1?type=video")
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "video", "url": "https://sns-video-hw.xhscdn.com/video-1.mp4"}
+
+
+def test_media_url_validation_blocks_ssrf_targets():
+    blocked_urls = [
+        "file:///etc/passwd",
+        "http://localhost/a.jpg",
+        "http://127.0.0.1/a.jpg",
+        "http://10.0.0.1/a.jpg",
+        "http://172.16.0.1/a.jpg",
+        "http://192.168.1.1/a.jpg",
+        "http://169.254.169.254/latest/meta-data",
+    ]
+    for url in blocked_urls:
+        with pytest.raises(MediaProxyError):
+            validate_asset_url(url)
+
+    assert validate_asset_url("https://93.184.216.34/a.jpg") == "https://93.184.216.34/a.jpg"
+
+
+async def test_media_redirect_validation_rejects_internal_target():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://127.0.0.1/private"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(MediaProxyError):
+            await get_with_safe_redirects(client, "https://93.184.216.34/a.jpg", {})
+
+
+def api_app(tmp_path: Path, parser, media_proxy=None) -> FastAPI:
     app = FastAPI()
     store = JSONStore(tmp_path / "collections.json")
-    app.include_router(create_api_router(store, parser, DummyMediaProxy()))
+    app.include_router(create_api_router(store, parser, media_proxy or DummyMediaProxy()))
     return app
 
 
 class DummyMediaProxy:
     pass
+
+
+class RecordingMediaProxy:
+    async def image(self, raw_url: str):
+        return JSONResponse({"kind": "image", "url": raw_url})
+
+    async def video(self, request, raw_url: str):
+        return JSONResponse({"kind": "video", "url": raw_url})
+
+
+class FakeStatusSyncManager:
+    def status_payload(self) -> dict:
+        return {"provider": "cos", "enabled": True, "bucket": "secret-bucket"}
 
 
 class QueueParser:

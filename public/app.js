@@ -10,6 +10,7 @@ import {
   normalizeImportDataFile,
   parseTags
 } from "./view-model.js";
+import { withRequestSecurity } from "./request-security.js";
 
 const form = document.querySelector("#collectForm");
 const input = document.querySelector("#collectInput");
@@ -53,8 +54,6 @@ const batchImportResults = document.querySelector("#batchImportResults");
 
 const STORE_KEY = "opencollect:xhs:poc";
 const MIGRATION_KEY = "opencollect:xhs:poc:migrated:v1";
-const XHS_IMAGE_STYLE_SUFFIX = "!nd_dft_wlteh_webp_3";
-const XHS_VIDEO_PLAYBACK_HOSTS = ["sns-video-bd.xhscdn.com", "sns-video-hw.xhscdn.com"];
 const BATCH_IMPORT_LIMIT = 20;
 const DEFAULT_BATCH_IMPORT_DELAY_MS = 2000;
 let notes = [];
@@ -768,9 +767,9 @@ function renderList(view = getCollectionView(notes, viewState)) {
 }
 
 function renderCollectionCard(note) {
-  const coverUrls = getImageProxyUrls(note.images);
+  const coverUrls = getImageProxyUrls(note);
   const cover = coverUrls[0] || "";
-  const avatar = note.author?.avatar ? imageProxy(note.author.avatar) : "";
+  const avatar = note.author?.avatar ? avatarProxy(note.id) : "";
   const authorName = note.author?.name || "未知作者";
   const isActive = note.id === activeId ? " active" : "";
   const isVideo = Boolean(note.video?.url);
@@ -956,7 +955,7 @@ function renderActiveNote() {
 
   const media = renderMedia(note);
   const authorName = note.author?.name || "未知作者";
-  const authorAvatar = note.author?.avatar ? imageProxy(note.author.avatar) : "";
+  const authorAvatar = note.author?.avatar ? avatarProxy(note.id) : "";
   const platform = getPlatformMeta(note);
   const isRefreshing = refreshingIds.has(note.id);
   const collectedAt = formatDate(note.collectedAt || note.createdAt);
@@ -1035,16 +1034,15 @@ function closeDetail() {
 
 function renderMedia(note) {
   if (note.video?.url) {
-    const poster = note.video.poster || note.images?.[0]?.url || "";
-    const posterUrls = getImageProxyCandidates(poster);
-    const videoUrls = getVideoProxyCandidates(note.video);
+    const posterUrl = note.video.poster ? posterProxy(note.id) : note.images?.[0]?.url ? imageProxy(note.id, 0) : "";
+    const videoUrls = getVideoProxyCandidates(note);
     return `
       <div class="video-viewer" data-video-player>
         <video
           playsinline
           preload="metadata"
-          ${posterUrls.length ? `poster="${escapeAttr(posterUrls[0])}"` : ""}
-          src="${escapeAttr(videoUrls[0] || mediaProxy(note.video.url))}"
+          ${posterUrl ? `poster="${escapeAttr(posterUrl)}"` : ""}
+          src="${escapeAttr(videoUrls[0] || mediaProxy(note.id, 0))}"
           ${renderFallbackAttrs(videoUrls.slice(1))}
         ></video>
         <div class="video-controls" aria-label="视频控制">
@@ -1080,7 +1078,7 @@ function renderMedia(note) {
     `;
   }
 
-  const imageUrlSets = getImageProxyUrlSets(note.images);
+  const imageUrlSets = getImageProxyUrlSets(note);
 
   return `
     <div class="media-viewer ${note.images.length === 1 ? "single" : ""}" ${note.images.length > 1 ? 'tabindex="0"' : ""}>
@@ -1095,7 +1093,7 @@ function renderMedia(note) {
             return `
               <figure>
                 <img
-                  src="${escapeAttr(currentUrls[0] || imageProxy(image.url))}"
+                  src="${escapeAttr(currentUrls[0] || imageProxy(note.id, index))}"
                   alt="${escapeAttr(note.title)} 图片 ${index + 1}"
                   loading="lazy"
                   ${renderImageFallbackAttrs(fallbackUrls)}
@@ -1253,123 +1251,44 @@ function formatVideoTime(seconds) {
   return `${minutes}:${remainingSeconds}`;
 }
 
-function imageProxy(url) {
-  return `/api/image?url=${encodeURIComponent(normalizeXhsImageUrl(url))}`;
+function imageProxy(collectionId, mediaIndex) {
+  return `/api/media/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(mediaIndex)}?type=image`;
 }
 
-function mediaProxy(url) {
-  return `/api/media?url=${encodeURIComponent(url)}`;
+function mediaProxy(collectionId, mediaIndex) {
+  return `/api/media/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(mediaIndex)}?type=video`;
 }
 
-function getVideoProxyCandidates(video) {
-  if (!video) return [];
+function avatarProxy(collectionId) {
+  return `/api/media/collections/${encodeURIComponent(collectionId)}/avatar`;
+}
+
+function posterProxy(collectionId) {
+  return `/api/media/collections/${encodeURIComponent(collectionId)}/poster`;
+}
+
+function getVideoProxyCandidates(note) {
+  const video = note?.video;
+  if (!note?.id || !video) return [];
   const rawUrls = [];
   if (video.url) rawUrls.push(video.url);
   (video.streams || []).forEach((stream) => {
     if (stream?.url) rawUrls.push(stream.url);
     (stream?.backupUrls || []).forEach((url) => rawUrls.push(url));
   });
-  return uniqueValues(rawUrls.flatMap((url) => getXhsVideoUrlCandidates(url))).map((candidate) => mediaProxy(candidate));
+  return uniqueValues(rawUrls).map((_, index) => mediaProxy(note.id, index));
 }
 
-function getImageProxyUrls(images) {
-  return getImageProxyUrlSets(images).flat();
+function getImageProxyUrls(note) {
+  return getImageProxyUrlSets(note).flat();
 }
 
-function getImageProxyUrlSets(images) {
-  return (images || []).map((image) => getImageProxyCandidates(image?.url));
-}
-
-function getImageProxyCandidates(url) {
-  if (!url) return [];
-
-  const candidates = [normalizeXhsImageUrl(url)];
-  const spectrumUrl = getXhsSpectrumImageUrl(candidates[0]);
-  if (spectrumUrl && spectrumUrl !== candidates[0]) candidates.push(spectrumUrl);
-
-  return uniqueValues(candidates).map((candidate) => imageProxy(candidate));
-}
-
-function normalizeXhsImageUrl(url) {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    if (!host.endsWith(".xhscdn.com")) return url;
-
-    const resourceId = getXhsImageResourceId(parsed.pathname);
-    if (!resourceId) return url;
-    const pathPrefix = hasXhsSpectrumPath(parsed.pathname) ? "spectrum/" : "";
-
-    if (host.startsWith("sns-webpic-")) {
-      return `https://${host.replace("sns-webpic-", "sns-img-")}/${pathPrefix}${resourceId}${XHS_IMAGE_STYLE_SUFFIX}`;
-    }
-
-    if (host.startsWith("sns-img-") && !parsed.pathname.includes("!")) {
-      return `https://${host}/${pathPrefix}${resourceId}${XHS_IMAGE_STYLE_SUFFIX}`;
-    }
-  } catch {
-    return url;
-  }
-
-  return url;
-}
-
-function getXhsSpectrumImageUrl(url) {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    if (!host.startsWith("sns-img-") || !host.endsWith(".xhscdn.com")) return "";
-    if (hasXhsSpectrumPath(parsed.pathname)) return "";
-
-    const resourceId = getXhsImageResourceId(parsed.pathname);
-    if (!resourceId) return "";
-    return `https://${host}/spectrum/${resourceId}${XHS_IMAGE_STYLE_SUFFIX}`;
-  } catch {
-    return "";
-  }
-}
-
-function hasXhsSpectrumPath(pathname) {
-  return pathname.split("/").includes("spectrum");
-}
-
-function getXhsImageResourceId(pathname) {
-  return pathname.split("/").filter(Boolean).pop()?.split("!")[0] || "";
+function getImageProxyUrlSets(note) {
+  return (note?.images || []).map((_, index) => [imageProxy(note.id, index)]);
 }
 
 function uniqueValues(values) {
   return Array.from(new Set(values.filter(Boolean)));
-}
-
-function getXhsVideoUrlCandidates(url) {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    if (!isXhsVideoHost(host) || !parsed.pathname.includes("/stream/") || !parsed.pathname.toLowerCase().endsWith(".mp4")) {
-      return [url];
-    }
-
-    const hosts = XHS_VIDEO_PLAYBACK_HOSTS.includes(host)
-      ? [host, ...XHS_VIDEO_PLAYBACK_HOSTS.filter((candidate) => candidate !== host)]
-      : XHS_VIDEO_PLAYBACK_HOSTS;
-
-    return uniqueValues(
-      hosts.map((candidateHost) => {
-        const candidate = new URL(url);
-        candidate.protocol = "https:";
-        candidate.hostname = candidateHost;
-        candidate.search = "";
-        candidate.hash = "";
-        return candidate.toString();
-      })
-    );
-  } catch {
-    return [url];
-  }
-}
-
-function isXhsVideoHost(host) {
-  return host.startsWith("sns-video-") && host.endsWith(".xhscdn.com");
 }
 
 function renderImageFallbackAttrs(urls) {
@@ -1780,7 +1699,8 @@ function updateRevisionFromPayload(payload) {
 }
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const requestOptions = withRequestSecurity(options);
+  const response = await fetch(url, requestOptions);
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
   if (!response.ok) {

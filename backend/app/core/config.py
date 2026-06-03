@@ -65,6 +65,7 @@ class AuthSettings:
     session_secret: str = ""
     session_ttl_seconds: int = 604800
     cookie_name: str = "opencollect_session"
+    csrf_cookie_name: str = "opencollect_csrf"
 
 
 @dataclass(frozen=True)
